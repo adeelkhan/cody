@@ -267,3 +267,80 @@ func TestBackspaceAfterSelectionThenCopyDoesNotPanic(t *testing.T) {
 		t.Fatalf("got clipboard=%q, want %q", m.clipboard, "ab\n")
 	}
 }
+
+func TestLoadFileResetsSelection(t *testing.T) {
+	dir := t.TempDir()
+	big := filepath.Join(dir, "big.txt")
+	if err := os.WriteFile(big, []byte("l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	small := filepath.Join(dir, "small.txt")
+	if err := os.WriteFile(small, []byte("a\nb"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New()
+	m, err := m.LoadFile(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftDown})
+
+	m, err = m.LoadFile(small)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, ok := m.selectionRange(); ok {
+		t.Fatal("expected LoadFile to clear any selection from the previous buffer")
+	}
+	// Must not panic, and must operate on the new (small) buffer.
+	desc := m.Copy()
+	if desc != "Copied line" {
+		t.Fatalf("got %q", desc)
+	}
+}
+
+func TestLoadFileResetsUndoRedoStacks(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(a, []byte("AAA"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	b := filepath.Join(dir, "b.txt")
+	if err := os.WriteFile(b, []byte("BBB"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New()
+	m, err := m.LoadFile(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+
+	m, err = m.LoadFile(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc := m.undo(); desc != "Nothing to undo" {
+		t.Fatalf("got %q, want the undo stack cleared by LoadFile", desc)
+	}
+	if m.buf.Lines[0] != "BBB" {
+		t.Fatalf("got %q, want b.txt's original content untouched", m.buf.Lines[0])
+	}
+}
+
+func TestCommandKeysReportNoFileOpenWithoutABuffer(t *testing.T) {
+	m := New()
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if cmd == nil {
+		t.Fatal("expected a status message even with no buffer loaded")
+	}
+	msg := cmd().(CommandExecutedMsg)
+	if msg.Description != "No file open" {
+		t.Fatalf("got %q", msg.Description)
+	}
+}

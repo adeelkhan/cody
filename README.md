@@ -29,7 +29,9 @@ go build -o cody ./cmd/cody
 - Project tree: arrows or `hjkl` to navigate, `Enter`/`l` to open a file or
   toggle a directory's expand/collapse state, `h` to collapse
 - Editor: arrows to move the cursor, typing inserts text, `Enter` for a
-  newline, `Backspace` to delete, `Shift+Arrow` to select text
+  newline, `Backspace` to delete, `Shift+Arrow` to select text (requires a
+  terminal that reports shift-modified arrow keys — most modern terminal
+  emulators do, e.g. iTerm2, Alacritty, Kitty, WezTerm)
 - `Ctrl+O` open (or click File > Open), `Ctrl+S` save
 - `Ctrl+X`/`Ctrl+C`/`Ctrl+V` cut/copy/paste (operates on the selection, or the
   whole current line if nothing is selected)

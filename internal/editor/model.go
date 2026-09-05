@@ -45,6 +45,11 @@ func (m Model) LoadFile(path string) (Model, error) {
 	m.buf = buf
 	m.cursorLine = 0
 	m.cursorCol = 0
+	m.selecting = false
+	m.selAnchorLine = 0
+	m.selAnchorCol = 0
+	m.undoStack = nil
+	m.redoStack = nil
 	return m, nil
 }
 
@@ -69,11 +74,15 @@ func (m Model) Filetype() string {
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
-	if m.buf == nil {
-		return m, nil
-	}
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
+		return m, nil
+	}
+	if m.buf == nil {
+		switch keyMsg.String() {
+		case "ctrl+s", "ctrl+x", "ctrl+c", "ctrl+v", "ctrl+z", "ctrl+y":
+			return m, func() tea.Msg { return CommandExecutedMsg{Description: "No file open"} }
+		}
 		return m, nil
 	}
 	switch keyMsg.String() {
