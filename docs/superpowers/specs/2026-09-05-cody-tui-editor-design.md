@@ -139,13 +139,27 @@ entry) is one registration, not three.
   (keyword, string, comment, number, function name) to Lip Gloss styles. A
   parse or query failure, or an unsupported extension, falls back to
   plain-text rendering for that buffer rather than surfacing an error.
-- **Folding** (Phase 4b, built on top of 4a's parse trees): derived from
-  tree-sitter node ranges (e.g. function/block bodies), using a
-  per-language table of foldable node-type strings — these names are not
-  consistent across grammars (e.g. Go/Python use `block`, JS/TS use
-  `statement_block`), so the table is per-language even though the
-  tree-walk that consumes it is shared. A folded region collapses to a
-  single summary line, toggled with a dedicated key (e.g. `za`).
+- **Folding** (Phase 4b): derived from tree-sitter node ranges (e.g.
+  function/block bodies: `block` for Go/Python, `statement_block` for
+  JS/TS, `section`/`fenced_code_block` for Markdown), using a per-language
+  table of foldable node-type strings — these names are not consistent
+  across grammars, so the table is per-language even though the tree-walk
+  that consumes it is shared. Fold detection runs its own independent
+  parse via a separate `Folder` capability, rather than widening 4a's
+  `Highlighter` interface to share one parse — a deliberate choice made
+  when 4b was designed, favoring lower regression risk against 4a's
+  already-shipped, reviewed code over the CPU cost of a second parse
+  (which only matters on very large files, an already-documented scaling
+  limit unrelated to folding). A folded region collapses to a single
+  summary line. The toggle key is `Ctrl+K`, not vim's two-key `za` chord
+  this spec originally suggested as an example — this codebase has no
+  precedent for multi-key sequences, and a bare letter key can't be
+  repurposed since it's already text input; `Ctrl+K` is registered through
+  the command registry like every other editor command, so it works
+  regardless of focus and appears in the command palette automatically.
+  Editing the buffer clears all fold state (simpler and safer than
+  remapping fold-line indices after lines shift), matching how "an edit
+  invalidates a fold" already behaves in many editors.
 - **Search**: `Ctrl+F` opens a mini dialog for incremental find scoped to the
   **current buffer only** (project-wide search is out of scope for this
   design). `Enter`/`n` jumps to the next match, `N` the previous, `Esc`
