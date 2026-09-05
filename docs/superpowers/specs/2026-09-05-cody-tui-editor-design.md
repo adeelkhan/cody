@@ -25,11 +25,21 @@ terminal, a menu bar, and a status bar.
   for styling, using [Bubbles](https://github.com/charmbracelet/bubbles)
   component primitives (viewport, textinput) where they fit.
 - **Syntax parsing**: [`github.com/smacker/go-tree-sitter`](https://github.com/smacker/go-tree-sitter)
-  (CGO bindings to the real tree-sitter C library), with vendored grammars for
-  the initial language set: **Go, Python, JavaScript/TypeScript, JSON,
-  Markdown**. Additional grammars can be added later without changing the
-  architecture — each grammar is a Go package registered against a set of
-  file extensions.
+  (CGO bindings to the real tree-sitter C library), with grammars for the
+  initial language set: **Go, Python, JavaScript, TypeScript, Markdown** —
+  all five are ready-made sub-packages of `go-tree-sitter` itself (verified
+  by a build spike before Phase 4a: `golang`, `python`, `javascript`,
+  `typescript/typescript`, `markdown`), so no grammar vendoring is needed for
+  this set. **JSON is deferred** — `go-tree-sitter` has no ready-made JSON
+  sub-package; adding it later means vendoring `tree-sitter-json`'s C sources
+  and writing a small binding file mirroring the library's own pattern for
+  its other languages (confirmed low-risk, just not done yet). Additional
+  grammars can be added later without changing the architecture — each
+  grammar is a Go package registered against a set of file extensions.
+  Markdown's parse API returns a `MarkdownTree` with separate block/inline
+  trees rather than a single `sitter.Tree` like the other languages; this is
+  absorbed inside Markdown's own highlighter implementation, not exposed to
+  the rest of the system.
 - **Embedded terminal**: [`github.com/creack/pty`](https://github.com/creack/pty)
   to spawn a real shell in a pseudo-terminal, with a VT100/ANSI emulation
   library (e.g. [`hinshun/vt10x`](https://github.com/hinshun/vt10x)) to
@@ -122,14 +132,20 @@ entry) is one registration, not three.
 - **Cut/Copy/Paste**: internal clipboard buffer only (not OS clipboard) —
   fully portable across SSH/tmux with no extra configuration, at the cost of
   not interoperating with other apps.
-- **Tree-sitter highlighting**: the buffer is (re)parsed on load and after
-  debounced edits, using the grammar matched to the file's extension.
-  Highlight queries per language map syntax captures (keyword, string,
-  comment, etc.) to Lip Gloss styles. A parse or query failure falls back to
+- **Tree-sitter highlighting** (Phase 4a): the buffer is (re)parsed on load
+  and after debounced edits, using the grammar matched to the file's
+  extension (`.go`, `.py`, `.js`/`.jsx`/`.mjs`, `.ts`/`.tsx`, `.md` — JSON
+  deferred, see §2). Highlight queries per language map syntax captures
+  (keyword, string, comment, number, function name) to Lip Gloss styles. A
+  parse or query failure, or an unsupported extension, falls back to
   plain-text rendering for that buffer rather than surfacing an error.
-- **Folding**: derived from tree-sitter node ranges (e.g. function/block
-  bodies). A folded region collapses to a single summary line, toggled with
-  a dedicated key (e.g. `za`).
+- **Folding** (Phase 4b, built on top of 4a's parse trees): derived from
+  tree-sitter node ranges (e.g. function/block bodies), using a
+  per-language table of foldable node-type strings — these names are not
+  consistent across grammars (e.g. Go/Python use `block`, JS/TS use
+  `statement_block`), so the table is per-language even though the
+  tree-walk that consumes it is shared. A folded region collapses to a
+  single summary line, toggled with a dedicated key (e.g. `za`).
 - **Search**: `Ctrl+F` opens a mini dialog for incremental find scoped to the
   **current buffer only** (project-wide search is out of scope for this
   design). `Enter`/`n` jumps to the next match, `N` the previous, `Esc`
@@ -214,8 +230,16 @@ Each phase is independently functional/demoable:
    Cut/Copy/Paste (internal clipboard), undo/redo — all wired through the
    registry.
 3. **Command palette** (Commands menu).
-4. **Tree-sitter integration** — grammar loading for Go/Python/JS-TS/JSON/
-   Markdown, syntax highlighting, folding.
+4a. **Tree-sitter syntax highlighting** — grammar loading for Go/Python/
+   JS/TS/Markdown (JSON deferred, see §2), highlight queries, capture-to-style
+   mapping, debounced re-highlight on edit. Split out from the original
+   single "tree-sitter integration" phase once a pre-implementation research
+   spike found JSON needs custom grammar vendoring and the combined
+   highlighting+folding scope was larger than any phase so far — each half
+   is independently demoable on its own.
+4b. **Code folding** — built on top of 4a's parse trees: per-language
+   foldable-node-type tables, fold/unfold toggle, collapsed-region
+   rendering.
 5. **Embedded terminal pane** (PTY + VT100 emulation).
 6. **In-buffer search** mini dialog.
 7. **Polish** — nerd-font fallback flag, README, docs for the macOS `Cmd+`
