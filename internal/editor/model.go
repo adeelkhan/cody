@@ -102,17 +102,20 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.extendSelection()
 		m.moveRight()
 	case "enter":
+		m.selecting = false
 		m.pushUndo()
 		m.buf.InsertNewline(m.cursorLine, m.cursorCol)
 		m.cursorLine++
 		m.cursorCol = 0
 	case "backspace":
+		m.selecting = false
 		m.pushUndo()
 		m.cursorLine, m.cursorCol = m.buf.DeleteBefore(m.cursorLine, m.cursorCol)
 	case "ctrl+s":
 		desc := m.save()
 		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case " ":
+		m.selecting = false
 		m.pushUndo()
 		m.buf.InsertRune(m.cursorLine, m.cursorCol, ' ')
 		m.cursorCol++
@@ -133,6 +136,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	default:
 		if keyMsg.Type == tea.KeyRunes && !keyMsg.Alt {
+			m.selecting = false
 			m.pushUndo()
 			m.insertText(string(keyMsg.Runes))
 		}
@@ -212,6 +216,7 @@ func (m *Model) Cut() string {
 		m.selecting = false
 		return "Cut selection"
 	}
+	m.selecting = false
 	m.pushUndo()
 	m.clipboard = m.buf.DeleteLine(m.cursorLine) + "\n"
 	if m.cursorLine >= len(m.buf.Lines) {
@@ -234,6 +239,7 @@ func (m *Model) Paste() string {
 	if m.clipboard == "" {
 		return "Nothing to paste"
 	}
+	m.selecting = false
 	m.pushUndo()
 	m.insertText(m.clipboard)
 	return "Pasted"
@@ -279,6 +285,7 @@ func (m *Model) undo() string {
 	m.cursorLine = prev.cursorLine
 	m.cursorCol = prev.cursorCol
 	m.buf.Dirty = true
+	m.selecting = false
 	return "Undo"
 }
 
@@ -294,6 +301,7 @@ func (m *Model) redo() string {
 	m.cursorLine = next.cursorLine
 	m.cursorCol = next.cursorCol
 	m.buf.Dirty = true
+	m.selecting = false
 	return "Redo"
 }
 

@@ -242,3 +242,28 @@ func TestCtrlXCtrlCCtrlVKeysDispatchThroughUpdate(t *testing.T) {
 		t.Fatalf("got %+v, ok=%v", msg, ok)
 	}
 }
+
+func TestBackspaceAfterSelectionThenCopyDoesNotPanic(t *testing.T) {
+	m := setupEditor(t, "a\nb\nc")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftUp})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.buf.Lines[0] != "ab" || m.buf.Lines[1] != "c" || len(m.buf.Lines) != 2 {
+		t.Fatalf("setup failed, got %v", m.buf.Lines)
+	}
+	if _, _, _, _, ok := m.selectionRange(); ok {
+		t.Fatal("expected backspace to clear the stale selection")
+	}
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("expected a command from ctrl+c")
+	}
+	msg, ok := cmd().(CommandExecutedMsg)
+	if !ok || msg.Description != "Copied line" {
+		t.Fatalf("got %+v, ok=%v", msg, ok)
+	}
+	if m.clipboard != "ab\n" {
+		t.Fatalf("got clipboard=%q, want %q", m.clipboard, "ab\n")
+	}
+}
