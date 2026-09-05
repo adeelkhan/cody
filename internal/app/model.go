@@ -24,6 +24,12 @@ const (
 	statusBarHeight = 1
 	menuBarHeight   = 1
 	terminalHeight  = 8
+	borderSize      = 2 // lipgloss.NormalBorder adds 1 cell on each side
+)
+
+var (
+	focusedBorderColor   = lipgloss.Color("205")
+	unfocusedBorderColor = lipgloss.Color("240")
 )
 
 type Model struct {
@@ -62,8 +68,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		paneHeight := m.height - menuBarHeight - statusBarHeight
 		editorHeight := paneHeight - terminalHeight
-		m.tree = m.tree.SetSize(treeWidth, paneHeight)
-		m.editor = m.editor.SetSize(m.width-treeWidth, editorHeight)
+		m.tree = m.tree.SetSize(treeWidth-borderSize, paneHeight-borderSize)
+		m.editor = m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -72,6 +78,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab", "shift+tab":
 			m.toggleFocus()
 			return m, nil
+		case "ctrl+s":
+			var cmd tea.Cmd
+			m.editor, cmd = m.editor.Update(msg)
+			return m, cmd
 		}
 	case filetree.FileOpenedMsg:
 		editorModel, err := m.editor.LoadFile(msg.Path)
@@ -114,8 +124,24 @@ func (m Model) View() string {
 	paneHeight := m.height - menuBarHeight - statusBarHeight
 	editorHeight := paneHeight - terminalHeight
 
-	treeStyle := lipgloss.NewStyle().Width(treeWidth).Height(paneHeight)
-	editorStyle := lipgloss.NewStyle().Width(m.width - treeWidth).Height(editorHeight)
+	treeBorderColor := unfocusedBorderColor
+	editorBorderColor := unfocusedBorderColor
+	if m.focus == focusTree {
+		treeBorderColor = focusedBorderColor
+	} else {
+		editorBorderColor = focusedBorderColor
+	}
+
+	treeStyle := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(treeBorderColor).
+		Width(treeWidth - borderSize).
+		Height(paneHeight - borderSize)
+	editorStyle := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(editorBorderColor).
+		Width(m.width - treeWidth - borderSize).
+		Height(editorHeight - borderSize)
 	terminalStyle := lipgloss.NewStyle().Width(m.width - treeWidth).Height(terminalHeight)
 
 	right := lipgloss.JoinVertical(lipgloss.Left,

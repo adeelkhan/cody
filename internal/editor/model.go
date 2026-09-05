@@ -85,8 +85,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.buf.InsertRune(m.cursorLine, m.cursorCol, ' ')
 		m.cursorCol++
 	default:
-		if keyMsg.Type == tea.KeyRunes {
+		if keyMsg.Type == tea.KeyRunes && !keyMsg.Alt {
 			for _, r := range keyMsg.Runes {
+				if r == '\n' || r == '\r' {
+					m.buf.InsertNewline(m.cursorLine, m.cursorCol)
+					m.cursorLine++
+					m.cursorCol = 0
+					continue
+				}
 				m.buf.InsertRune(m.cursorLine, m.cursorCol, r)
 				m.cursorCol++
 			}

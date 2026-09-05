@@ -17,7 +17,7 @@ func Render(width int, projectName, recentCommand, filetype string, line, col in
 	if gap < 1 {
 		gap = 1
 	}
-	return style.Width(width).Render(left + spaces(gap) + right)
+	return style.Width(width).MaxWidth(width).Render(left + spaces(gap) + right)
 }
 
 func spaces(n int) string {

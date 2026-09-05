@@ -25,7 +25,7 @@ go build -o cody ./cmd/cody
 
 - `Tab` / `Shift+Tab` — switch focus between the project tree and the editor
 - Project tree: arrows or `hjkl` to navigate, `Enter`/`l` to open a file or
-  expand a directory, `h` to collapse
+  toggle a directory's expand/collapse state, `h` to collapse
 - Editor: arrows to move the cursor, typing inserts text, `Enter` for a
   newline, `Backspace` to delete, `Ctrl+S` to save
 - `Ctrl+Q` — quit

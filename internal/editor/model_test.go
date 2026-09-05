@@ -78,6 +78,22 @@ func TestFiletype(t *testing.T) {
 	}
 }
 
+func TestAltModifiedKeyDoesNotInsert(t *testing.T) {
+	m := setupEditor(t, "")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a"), Alt: true})
+	if m.buf.Lines[0] != "" {
+		t.Fatalf("got %q, want empty — alt+a should not insert", m.buf.Lines[0])
+	}
+}
+
+func TestMultiRuneBurstWithNewlineSplitsLines(t *testing.T) {
+	m := setupEditor(t, "")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ab\ncd")})
+	if len(m.buf.Lines) != 2 || m.buf.Lines[0] != "ab" || m.buf.Lines[1] != "cd" {
+		t.Fatalf("got %v, want [\"ab\" \"cd\"]", m.buf.Lines)
+	}
+}
+
 func TestSpaceBarInsertsSpace(t *testing.T) {
 	m := setupEditor(t, "ab")
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
