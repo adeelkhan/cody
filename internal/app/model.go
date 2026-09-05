@@ -82,6 +82,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.editor = m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
 		return m, nil
 	}
+	if _, ok := msg.(editor.RehighlightMsg); ok {
+		var cmd tea.Cmd
+		m.editor, cmd = m.editor.Update(msg)
+		return m, cmd
+	}
 	if m.activeDialog == dialogFileOpen {
 		return m.updateFileOpenDialog(msg)
 	}

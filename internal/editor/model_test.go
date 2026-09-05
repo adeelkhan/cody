@@ -3,9 +3,12 @@ package editor
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func setupEditor(t *testing.T, content string) Model {
@@ -342,5 +345,264 @@ func TestCommandKeysReportNoFileOpenWithoutABuffer(t *testing.T) {
 	msg := cmd().(CommandExecutedMsg)
 	if msg.Description != "No file open" {
 		t.Fatalf("got %q", msg.Description)
+	}
+}
+
+func TestLoadFileHighlightsAGoFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.highlightSpans) == 0 {
+		t.Fatal("expected highlightSpans to be populated for a .go file")
+	}
+	view := m.View()
+	if view == "" {
+		t.Fatal("expected a non-empty rendered view")
+	}
+}
+
+func TestLoadFileUnsupportedExtensionHasNoHighlighter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.bin")
+	if err := os.WriteFile(path, []byte("just bytes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.highlighter != nil {
+		t.Fatal("expected no highlighter for an unsupported extension")
+	}
+	if view := m.View(); view == "" {
+		t.Fatal("expected plain-text rendering to still work with no highlighter")
+	}
+}
+
+func TestLoadFileResetsHighlightStateAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	goPath := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(goPath, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	txtPath := filepath.Join(dir, "b.bin")
+	if err := os.WriteFile(txtPath, []byte("plain"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(goPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.highlightSpans) == 0 {
+		t.Fatal("setup failed: expected highlight spans after loading a .go file")
+	}
+	m, err = m.LoadFile(txtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.highlighter != nil || len(m.highlightSpans) != 0 {
+		t.Fatal("expected highlighter and highlightSpans to be cleared after switching to an unsupported file")
+	}
+}
+
+func TestTypingSchedulesARehighlightCommand(t *testing.T) {
+	m := setupEditor(t, "")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if cmd == nil {
+		t.Fatal("expected typing to schedule a rehighlight command")
+	}
+	msg := cmd()
+	if _, ok := msg.(RehighlightMsg); !ok {
+		t.Fatalf("got %T, want RehighlightMsg", msg)
+	}
+}
+
+func TestRehighlightMsgWithCurrentGenerationReparses(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.highlightSpans) != 0 {
+		t.Fatal("setup failed: expected no highlight spans for an empty file")
+	}
+	// Typing valid Go into the empty buffer only shows up in highlightSpans
+	// if a genuine reparse runs — the stale (empty-file) spans are otherwise
+	// still what's cached, so this distinguishes a real reparse from a no-op.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("package main")})
+	if m.buf.Lines[0] != "package main" {
+		t.Fatalf("setup failed, got %q", m.buf.Lines[0])
+	}
+	m, _ = m.Update(RehighlightMsg{generation: m.highlightGeneration})
+	if len(m.highlightSpans) == 0 {
+		t.Fatal("expected highlightSpans to be repopulated after a matching-generation RehighlightMsg")
+	}
+}
+
+func TestStaleRehighlightMsgIsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spansBeforeEdit := len(m.highlightSpans[0])
+	if spansBeforeEdit == 0 {
+		t.Fatal("setup failed: expected at least one highlight span on line 0 before the edit")
+	}
+
+	// Prepend "X" to the line, corrupting the "package" keyword token —
+	// a genuine reparse of this new content would find zero keyword
+	// matches on this line, letting us detect whether a stale message
+	// incorrectly triggered one.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	staleGeneration := m.highlightGeneration - 1
+
+	m, _ = m.Update(RehighlightMsg{generation: staleGeneration})
+
+	if len(m.highlightSpans[0]) != spansBeforeEdit {
+		t.Fatalf("got %d spans on line 0, want %d (unchanged from before the edit) — a stale-generation message must not trigger a reparse", len(m.highlightSpans[0]), spansBeforeEdit)
+	}
+}
+
+func TestCtrlXThroughUpdateRefreshesHighlightSpans(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc add() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Move to line 2 (the function declaration) and cut it.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if len(m.highlightSpans[2]) == 0 {
+		t.Fatal("setup failed: expected a highlight span on the function-declaration line before cutting it")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	if len(m.buf.Lines) != 3 {
+		t.Fatalf("setup failed: expected the line to be removed, got %q", m.buf.Lines)
+	}
+	if _, ok := m.highlightSpans[2]; ok {
+		t.Fatal("expected highlightSpans to no longer have an entry for the removed line after ctrl+x")
+	}
+}
+
+func TestCtrlZThroughUpdateRefreshesHighlightSpans(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc add() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Move to line 2 (the function declaration), cut it (removing its
+	// highlight spans — verified by TestCtrlXThroughUpdateRefreshesHighlightSpans),
+	// then undo and confirm ctrl+z's synchronous rehighlight restores them.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	if _, ok := m.highlightSpans[2]; ok {
+		t.Fatal("setup failed: expected no highlightSpans entry for the removed line after ctrl+x")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	if len(m.buf.Lines) != 4 || m.buf.Lines[2] != "func add() {}" {
+		t.Fatalf("setup failed: expected undo to restore the removed line, got %q", m.buf.Lines)
+	}
+	if len(m.highlightSpans[2]) == 0 {
+		t.Fatal("expected highlightSpans to be refreshed synchronously after ctrl+z, restoring the function-declaration line's spans")
+	}
+}
+
+// lipgloss strips all ANSI styling under the default non-TTY test color
+// profile, which is exactly the blind spot that let the tab-conversion bug
+// (item 1) and the selection/syntax-color precedence go unverified by any
+// test in this phase: every prior test here only checked that spans exist
+// or that the view is non-empty, never that the rendered text actually
+// carries styling. These three tests force TrueColor to make that styling
+// visible and assert on it directly.
+
+func TestStyledLineActuallyContainsAnsiStyling(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := m.View()
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatal("expected the rendered view to contain ANSI escape codes when a highlighter is active")
+	}
+}
+
+func TestSelectedLineShowsReverseVideoNotSyntaxColor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftRight})
+	view := m.View()
+	if !strings.Contains(view, "\x1b[7m") {
+		t.Fatal("expected the selected line to contain a reverse-video escape code")
+	}
+}
+
+func TestMarkdownFileHighlightsThroughEditorView(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(path, []byte("# Title\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := m.View()
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatal("expected the rendered Markdown view to contain ANSI escape codes for the heading")
 	}
 }
