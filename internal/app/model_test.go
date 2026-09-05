@@ -132,6 +132,51 @@ func TestFullFlowOpenTypeSaveUpdatesStatusBar(t *testing.T) {
 	}
 }
 
+func TestMouseClickFileOpenThenTypeThenLoadsFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "target.go"), []byte("package main"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	// Click "File" (columns 0-3, row 0).
+	updated, _ = m.Update(tea.MouseMsg{X: 0, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+	if m.openMenu != "File" {
+		t.Fatalf("got openMenu=%q, want File", m.openMenu)
+	}
+
+	// Click "Open" (row 1, first item in the File dropdown).
+	updated, _ = m.Update(tea.MouseMsg{X: 0, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+	if m.activeDialog != dialogFileOpen {
+		t.Fatal("expected clicking Open to activate the file-open dialog")
+	}
+
+	// Type the path and confirm.
+	for _, r := range "target.go" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	if m.activeDialog != dialogNone {
+		t.Fatal("expected the dialog to close after a successful open")
+	}
+	if !m.editor.HasBuffer() {
+		t.Fatal("expected the editor to have loaded target.go")
+	}
+	if m.focus != focusEditor {
+		t.Fatal("expected focus on the editor")
+	}
+}
+
 func TestViewRendersAtSmallSize(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, false)
