@@ -369,3 +369,35 @@ func TestOpeningAGoFileHighlightsItInTheComposedApp(t *testing.T) {
 		t.Fatalf("expected the rendered view to contain the source text, got %q", view)
 	}
 }
+
+func TestFoldingAGoFunctionThroughTheComposedApp(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "main.go")
+	src := "package main\n\nfunc add(a int, b int) int {\n\treturn a + 42\n}\n\nvar x = 1\n"
+	if err := os.WriteFile(file, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	for i := 0; i < 2; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	m = updated.(Model)
+
+	view := m.View()
+	if strings.Contains(view, "return a + 42") {
+		t.Fatal("expected the folded function body to be hidden from the rendered view")
+	}
+	if !strings.Contains(view, "var x = 1") {
+		t.Fatal("expected content after the fold to still render")
+	}
+}

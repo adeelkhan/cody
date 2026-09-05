@@ -17,6 +17,7 @@ func buildCommands() []Command {
 		{Name: "Paste", Shortcut: "ctrl+v", Handler: cmdPaste},
 		{Name: "Undo", Shortcut: "ctrl+z", Handler: cmdUndo},
 		{Name: "Redo", Shortcut: "ctrl+y", Handler: cmdRedo},
+		{Name: "Toggle Fold", Shortcut: "ctrl+k", Handler: cmdToggleFold},
 		{Name: "Quit", Shortcut: "ctrl+q", Handler: cmdQuit},
 	}
 }
@@ -63,6 +64,12 @@ func cmdUndo(m Model) (Model, tea.Cmd) {
 func cmdRedo(m Model) (Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	return m, cmd
+}
+
+func cmdToggleFold(m Model) (Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 	return m, cmd
 }
 

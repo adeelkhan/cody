@@ -146,3 +146,36 @@ func keyTypeFor(shortcut string) tea.KeyType {
 	}
 	panic("unknown shortcut: " + shortcut)
 }
+
+func TestToggleFoldCommandDelegatesToEditorRegardlessOfFocus(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	src := "package main\n\nfunc add(a int, b int) int {\n\treturn a + 42\n}\n"
+	if err := os.WriteFile(file, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+	for i := 0; i < 2; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // back to the tree
+	m = updated.(Model)
+	if m.focus != focusTree {
+		t.Fatal("expected focus on tree")
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected ctrl+k to produce a command even with the tree focused")
+	}
+	msg, ok := cmd().(editor.CommandExecutedMsg)
+	if !ok || msg.Description != "Folded" {
+		t.Fatalf("got %+v, ok=%v", msg, ok)
+	}
+}
