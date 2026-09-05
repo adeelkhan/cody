@@ -59,6 +59,58 @@ func TestDeleteBeforeJoinsLines(t *testing.T) {
 	}
 }
 
+func TestTextRangeSameLine(t *testing.T) {
+	buf := &Buffer{Lines: []string{"hello world"}}
+	got := buf.TextRange(0, 6, 0, 11)
+	if got != "world" {
+		t.Fatalf("got %q, want %q", got, "world")
+	}
+}
+
+func TestTextRangeMultiLine(t *testing.T) {
+	buf := &Buffer{Lines: []string{"hello", "middle", "world"}}
+	got := buf.TextRange(0, 3, 2, 2)
+	want := "lo\nmiddle\nwo"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestDeleteRangeSameLine(t *testing.T) {
+	buf := &Buffer{Lines: []string{"hello world"}}
+	removed := buf.DeleteRange(0, 5, 0, 11)
+	if removed != " world" || buf.Lines[0] != "hello" {
+		t.Fatalf("got removed=%q lines=%v", removed, buf.Lines)
+	}
+}
+
+func TestDeleteRangeMultiLine(t *testing.T) {
+	buf := &Buffer{Lines: []string{"hello", "middle", "world"}}
+	removed := buf.DeleteRange(0, 3, 2, 2)
+	if removed != "lo\nmiddle\nwo" {
+		t.Fatalf("got removed=%q", removed)
+	}
+	if len(buf.Lines) != 1 || buf.Lines[0] != "helrld" {
+		t.Fatalf("got lines=%v", buf.Lines)
+	}
+}
+
+func TestDeleteLine(t *testing.T) {
+	buf := &Buffer{Lines: []string{"a", "b", "c"}}
+	removed := buf.DeleteLine(1)
+	if removed != "b" || len(buf.Lines) != 2 || buf.Lines[0] != "a" || buf.Lines[1] != "c" {
+		t.Fatalf("got removed=%q lines=%v", removed, buf.Lines)
+	}
+}
+
+func TestDeleteLineLastRemaining(t *testing.T) {
+	buf := &Buffer{Lines: []string{"only"}}
+	removed := buf.DeleteLine(0)
+	if removed != "only" || len(buf.Lines) != 1 || buf.Lines[0] != "" {
+		t.Fatalf("got removed=%q lines=%v, want one empty line left", removed, buf.Lines)
+	}
+}
+
 func TestSave(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "out.txt")
