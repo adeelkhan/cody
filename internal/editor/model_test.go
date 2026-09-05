@@ -479,3 +479,58 @@ func TestStaleRehighlightMsgIsIgnored(t *testing.T) {
 		t.Fatalf("got %d spans on line 0, want %d (unchanged from before the edit) — a stale-generation message must not trigger a reparse", len(m.highlightSpans[0]), spansBeforeEdit)
 	}
 }
+
+func TestCtrlXThroughUpdateRefreshesHighlightSpans(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc add() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Move to line 2 (the function declaration) and cut it.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if len(m.highlightSpans[2]) == 0 {
+		t.Fatal("setup failed: expected a highlight span on the function-declaration line before cutting it")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	if len(m.buf.Lines) != 3 {
+		t.Fatalf("setup failed: expected the line to be removed, got %q", m.buf.Lines)
+	}
+	if _, ok := m.highlightSpans[2]; ok {
+		t.Fatal("expected highlightSpans to no longer have an entry for the removed line after ctrl+x")
+	}
+}
+
+func TestCtrlZThroughUpdateRefreshesHighlightSpans(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc add() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Move to line 2 (the function declaration), cut it (removing its
+	// highlight spans — verified by TestCtrlXThroughUpdateRefreshesHighlightSpans),
+	// then undo and confirm ctrl+z's synchronous rehighlight restores them.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	if _, ok := m.highlightSpans[2]; ok {
+		t.Fatal("setup failed: expected no highlightSpans entry for the removed line after ctrl+x")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	if len(m.buf.Lines) != 4 || m.buf.Lines[2] != "func add() {}" {
+		t.Fatalf("setup failed: expected undo to restore the removed line, got %q", m.buf.Lines)
+	}
+	if len(m.highlightSpans[2]) == 0 {
+		t.Fatal("expected highlightSpans to be refreshed synchronously after ctrl+z, restoring the function-declaration line's spans")
+	}
+}
