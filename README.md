@@ -4,14 +4,20 @@ A terminal-based code editor written in Go.
 
 ## Status
 
-Phase 3 (command palette) of a phased build — see
+Phase 4a (tree-sitter syntax highlighting) of a phased build — see
 `docs/superpowers/specs/2026-09-05-cody-tui-editor-design.md` for the full
 design and `docs/superpowers/plans/` for phase-by-phase implementation plans.
 
-This phase adds: a command palette behind the Commands menu — click it,
-type to filter by name, arrows to move the selection, Enter to run it,
-Esc to close. It does not yet have: syntax highlighting/folding, an
-embedded shell, or in-buffer search — those land in later phases.
+This phase adds real syntax highlighting for Go, Python, JavaScript,
+TypeScript, and Markdown (headings and code blocks), backed by
+`github.com/smacker/go-tree-sitter`, re-parsed on load and ~150ms after
+you stop typing. JSON highlighting is deferred (the underlying library has
+no ready-made JSON grammar). It does not yet have: code folding (Phase
+4b), an embedded shell, or in-buffer search — those land in later phases.
+
+Building this phase requires a C compiler on your machine (CGO), since
+tree-sitter's grammars are C libraries — this was already noted as a
+tradeoff in the design doc's tech stack section.
 
 ## Build & run
 

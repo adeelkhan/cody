@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -265,5 +266,29 @@ func TestViewRendersAtSmallSize(t *testing.T) {
 	m = updated.(Model)
 	if view := m.View(); view == "" {
 		t.Fatal("expected a non-empty rendered view at a small terminal size")
+	}
+}
+
+func TestOpeningAGoFileHighlightsItInTheComposedApp(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(file, []byte("package main\n\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	if !m.editor.HasBuffer() {
+		t.Fatal("expected the file to be loaded")
+	}
+	view := m.View()
+	if !strings.Contains(view, "func") {
+		t.Fatalf("expected the rendered view to contain the source text, got %q", view)
 	}
 }
