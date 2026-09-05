@@ -81,6 +81,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case "ctrl+s":
 		desc := m.save()
 		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
+	case " ":
+		m.buf.InsertRune(m.cursorLine, m.cursorCol, ' ')
+		m.cursorCol++
 	default:
 		if keyMsg.Type == tea.KeyRunes {
 			for _, r := range keyMsg.Runes {

@@ -77,3 +77,16 @@ func TestFiletype(t *testing.T) {
 		t.Fatalf("got %q, want go", m.Filetype())
 	}
 }
+
+func TestSpaceBarInsertsSpace(t *testing.T) {
+	m := setupEditor(t, "ab")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+	if m.buf.Lines[0] != "a b" {
+		t.Fatalf("got %q, want %q", m.buf.Lines[0], "a b")
+	}
+	_, col := m.Cursor()
+	if col != 3 {
+		t.Fatalf("got col=%d, want 3", col)
+	}
+}
