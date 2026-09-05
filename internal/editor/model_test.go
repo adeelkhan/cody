@@ -410,3 +410,72 @@ func TestLoadFileResetsHighlightStateAcrossFiles(t *testing.T) {
 		t.Fatal("expected highlighter and highlightSpans to be cleared after switching to an unsupported file")
 	}
 }
+
+func TestTypingSchedulesARehighlightCommand(t *testing.T) {
+	m := setupEditor(t, "")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if cmd == nil {
+		t.Fatal("expected typing to schedule a rehighlight command")
+	}
+	msg := cmd()
+	if _, ok := msg.(rehighlightMsg); !ok {
+		t.Fatalf("got %T, want rehighlightMsg", msg)
+	}
+}
+
+func TestRehighlightMsgWithCurrentGenerationReparses(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.highlightSpans) != 0 {
+		t.Fatal("setup failed: expected no highlight spans for an empty file")
+	}
+	// Typing valid Go into the empty buffer only shows up in highlightSpans
+	// if a genuine reparse runs — the stale (empty-file) spans are otherwise
+	// still what's cached, so this distinguishes a real reparse from a no-op.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("package main")})
+	if m.buf.Lines[0] != "package main" {
+		t.Fatalf("setup failed, got %q", m.buf.Lines[0])
+	}
+	m, _ = m.Update(rehighlightMsg{generation: m.highlightGeneration})
+	if len(m.highlightSpans) == 0 {
+		t.Fatal("expected highlightSpans to be repopulated after a matching-generation rehighlightMsg")
+	}
+}
+
+func TestStaleRehighlightMsgIsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spansBeforeEdit := len(m.highlightSpans[0])
+	if spansBeforeEdit == 0 {
+		t.Fatal("setup failed: expected at least one highlight span on line 0 before the edit")
+	}
+
+	// Prepend "X" to the line, corrupting the "package" keyword token —
+	// a genuine reparse of this new content would find zero keyword
+	// matches on this line, letting us detect whether a stale message
+	// incorrectly triggered one.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	staleGeneration := m.highlightGeneration - 1
+
+	m, _ = m.Update(rehighlightMsg{generation: staleGeneration})
+
+	if len(m.highlightSpans[0]) != spansBeforeEdit {
+		t.Fatalf("got %d spans on line 0, want %d (unchanged from before the edit) — a stale-generation message must not trigger a reparse", len(m.highlightSpans[0]), spansBeforeEdit)
+	}
+}

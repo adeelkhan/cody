@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -16,20 +17,33 @@ type CommandExecutedMsg struct {
 	Description string
 }
 
+type rehighlightMsg struct {
+	generation int
+}
+
+const highlightDebounce = 150 * time.Millisecond
+
+func scheduleRehighlight(generation int) tea.Cmd {
+	return tea.Tick(highlightDebounce, func(time.Time) tea.Msg {
+		return rehighlightMsg{generation: generation}
+	})
+}
+
 type Model struct {
-	buf            *Buffer
-	cursorLine     int
-	cursorCol      int
-	width          int
-	height         int
-	selecting      bool
-	selAnchorLine  int
-	selAnchorCol   int
-	clipboard      string
-	undoStack      []undoSnapshot
-	redoStack      []undoSnapshot
-	highlighter    highlight.Highlighter
-	highlightSpans map[int][]highlight.LineSpan
+	buf                 *Buffer
+	cursorLine          int
+	cursorCol           int
+	width               int
+	height              int
+	selecting           bool
+	selAnchorLine       int
+	selAnchorCol        int
+	clipboard           string
+	undoStack           []undoSnapshot
+	redoStack           []undoSnapshot
+	highlighter         highlight.Highlighter
+	highlightSpans      map[int][]highlight.LineSpan
+	highlightGeneration int
 }
 
 type undoSnapshot struct {
@@ -101,10 +115,19 @@ func (m Model) Filetype() string {
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
-	keyMsg, ok := msg.(tea.KeyMsg)
-	if !ok {
+	switch msg := msg.(type) {
+	case rehighlightMsg:
+		if m.buf != nil && msg.generation == m.highlightGeneration {
+			m.rehighlight()
+		}
 		return m, nil
+	case tea.KeyMsg:
+		return m.handleKey(msg)
 	}
+	return m, nil
+}
+
+func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.buf == nil {
 		switch keyMsg.String() {
 		case "ctrl+s", "ctrl+x", "ctrl+c", "ctrl+v", "ctrl+z", "ctrl+y":
@@ -143,10 +166,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.buf.InsertNewline(m.cursorLine, m.cursorCol)
 		m.cursorLine++
 		m.cursorCol = 0
+		m.highlightGeneration++
+		return m, scheduleRehighlight(m.highlightGeneration)
 	case "backspace":
 		m.selecting = false
 		m.pushUndo()
 		m.cursorLine, m.cursorCol = m.buf.DeleteBefore(m.cursorLine, m.cursorCol)
+		m.highlightGeneration++
+		return m, scheduleRehighlight(m.highlightGeneration)
 	case "ctrl+s":
 		desc := m.save()
 		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
@@ -155,26 +182,38 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.pushUndo()
 		m.buf.InsertRune(m.cursorLine, m.cursorCol, ' ')
 		m.cursorCol++
+		m.highlightGeneration++
+		return m, scheduleRehighlight(m.highlightGeneration)
 	case "ctrl+x":
 		desc := m.Cut()
+		m.highlightGeneration++
+		m.rehighlight()
 		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+c":
 		desc := m.Copy()
 		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+v":
 		desc := m.Paste()
+		m.highlightGeneration++
+		m.rehighlight()
 		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+z":
 		desc := m.undo()
+		m.highlightGeneration++
+		m.rehighlight()
 		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+y":
 		desc := m.redo()
+		m.highlightGeneration++
+		m.rehighlight()
 		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	default:
 		if keyMsg.Type == tea.KeyRunes && !keyMsg.Alt {
 			m.selecting = false
 			m.pushUndo()
 			m.insertText(string(keyMsg.Runes))
+			m.highlightGeneration++
+			return m, scheduleRehighlight(m.highlightGeneration)
 		}
 	}
 	return m, nil
