@@ -17,7 +17,7 @@ type CommandExecutedMsg struct {
 	Description string
 }
 
-type rehighlightMsg struct {
+type RehighlightMsg struct {
 	generation int
 }
 
@@ -25,7 +25,7 @@ const highlightDebounce = 150 * time.Millisecond
 
 func scheduleRehighlight(generation int) tea.Cmd {
 	return tea.Tick(highlightDebounce, func(time.Time) tea.Msg {
-		return rehighlightMsg{generation: generation}
+		return RehighlightMsg{generation: generation}
 	})
 }
 
@@ -116,7 +116,7 @@ func (m Model) Filetype() string {
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case rehighlightMsg:
+	case RehighlightMsg:
 		if m.buf != nil && msg.generation == m.highlightGeneration {
 			m.rehighlight()
 		}
@@ -450,6 +450,6 @@ func highlightSelection(line string, lineIdx, startLine, startCol, endLine, endC
 	if from >= to {
 		return line
 	}
-	style := lipgloss.NewStyle().Reverse(true)
+	style := lipgloss.NewStyle().Reverse(true).TabWidth(lipgloss.NoTabConversion)
 	return string(runes[:from]) + style.Render(string(runes[from:to])) + string(runes[to:])
 }

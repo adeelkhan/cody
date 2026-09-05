@@ -11,36 +11,45 @@ import (
 	"github.com/smacker/go-tree-sitter/typescript/typescript"
 )
 
+var highlighterCache = make(map[Language]Highlighter)
+
 func New(lang Language) (Highlighter, error) {
+	if h, ok := highlighterCache[lang]; ok {
+		return h, nil
+	}
+	var h Highlighter
 	switch lang {
 	case LanguageGo:
-		h, err := newSitterHighlighter(golang.GetLanguage(), goQuery)
+		sh, err := newSitterHighlighter(golang.GetLanguage(), goQuery)
 		if err != nil {
 			return nil, err
 		}
-		return h, nil
+		h = sh
 	case LanguagePython:
-		h, err := newSitterHighlighter(python.GetLanguage(), pythonQuery)
+		sh, err := newSitterHighlighter(python.GetLanguage(), pythonQuery)
 		if err != nil {
 			return nil, err
 		}
-		return h, nil
+		h = sh
 	case LanguageJavaScript:
-		h, err := newSitterHighlighter(javascript.GetLanguage(), javascriptQuery)
+		sh, err := newSitterHighlighter(javascript.GetLanguage(), javascriptQuery)
 		if err != nil {
 			return nil, err
 		}
-		return h, nil
+		h = sh
 	case LanguageTypeScript:
-		h, err := newSitterHighlighter(typescript.GetLanguage(), typescriptQuery)
+		sh, err := newSitterHighlighter(typescript.GetLanguage(), typescriptQuery)
 		if err != nil {
 			return nil, err
 		}
-		return h, nil
+		h = sh
 	case LanguageMarkdown:
-		return newMarkdownHighlighter(), nil
+		h = newMarkdownHighlighter()
+	default:
+		return nil, fmt.Errorf("highlight: unsupported language %q", lang)
 	}
-	return nil, fmt.Errorf("highlight: unsupported language %q", lang)
+	highlighterCache[lang] = h
+	return h, nil
 }
 
 type sitterHighlighter struct {
@@ -58,12 +67,15 @@ func newSitterHighlighter(lang *sitter.Language, queryText string) (*sitterHighl
 
 func (h *sitterHighlighter) Highlight(source []byte) ([]Span, error) {
 	parser := sitter.NewParser()
+	defer parser.Close()
 	parser.SetLanguage(h.lang)
 	tree, err := parser.ParseCtx(context.Background(), nil, source)
 	if err != nil {
 		return nil, err
 	}
+	defer tree.Close()
 	cursor := sitter.NewQueryCursor()
+	defer cursor.Close()
 	cursor.Exec(h.query, tree.RootNode())
 	var spans []Span
 	for {

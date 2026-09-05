@@ -7,9 +7,12 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"cody/internal/editor"
 	"cody/internal/filetree"
+	"cody/internal/highlight"
 )
 
 func TestTabTogglesFocus(t *testing.T) {
@@ -266,6 +269,80 @@ func TestViewRendersAtSmallSize(t *testing.T) {
 	m = updated.(Model)
 	if view := m.View(); view == "" {
 		t.Fatal("expected a non-empty rendered view at a small terminal size")
+	}
+}
+
+// TestRehighlightMsgReachesEditorEvenWhenTreeIsFocused is a regression test
+// for a bug where app.Model.Update routed any unrecognized message type to
+// whichever component currently had focus. Since the debounced rehighlight
+// tick wasn't specifically handled, switching focus to the tree within the
+// 150ms debounce window caused the tick to be silently delivered to the
+// tree instead of the editor, leaving syntax highlighting stale.
+//
+// editor.RehighlightMsg's generation field is unexported, so this test
+// can't construct one with a matching generation from outside the editor
+// package. Instead it drives the real pipeline end to end: it captures the
+// actual tea.Cmd returned by typing (the real scheduleRehighlight tick,
+// unmodified), switches focus to the tree, then invokes that command for
+// real — which really sleeps out the 150ms debounce window — and feeds the
+// resulting real RehighlightMsg through app.Model.Update while the tree has
+// focus. It then inspects the *rendered ANSI styling* (forcing TrueColor,
+// since the default test color profile strips all styling) to prove the
+// editor actually reparsed: corrupting "package" into "Xpackage" removes
+// the tree-sitter keyword match, so if the tick reached the editor, the
+// stale span (which would otherwise mis-highlight "Xpackag" as a keyword,
+// misaligned by the inserted character) must be gone.
+func TestRehighlightMsgReachesEditorEvenWhenTreeIsFocused(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(file, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	keywordStyle, ok := highlight.StyleFor("keyword")
+	if !ok {
+		t.Fatal("setup failed: expected a registered keyword style")
+	}
+	staleStyledText := keywordStyle.Render("Xpackag")
+
+	// Prepend "X" to the first line via a real keypress through the
+	// composed app's Update, capturing the real scheduled tea.Cmd.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("setup failed: expected typing to schedule a rehighlight command")
+	}
+
+	// Switch focus to the tree before the debounce tick would normally
+	// fire — this is exactly the scenario the bug report describes.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.focus != focusTree {
+		t.Fatal("setup failed: expected focus on the tree")
+	}
+
+	// Invoke the actual scheduled command for real. This really sleeps out
+	// the 150ms debounce window and returns the genuine editor.RehighlightMsg
+	// (with its unexported generation field set correctly by editor code),
+	// rather than fabricating one with a guessed generation value.
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	view := m.editor.View()
+	if strings.Contains(view, staleStyledText) {
+		t.Fatal("expected the rehighlight tick to reach the editor and reparse even though the tree was focused, but the stale (pre-edit) keyword span was still applied to the post-edit text")
 	}
 }
 

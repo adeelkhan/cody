@@ -1,6 +1,9 @@
 package highlight
 
-import "unicode/utf8"
+import (
+	"sort"
+	"unicode/utf8"
+)
 
 type LineSpan struct {
 	StartCol int
@@ -53,13 +56,9 @@ func lineOffsets(source []byte) []int {
 }
 
 func lineForByte(offsets []int, b int) int {
-	line := 0
-	for i, off := range offsets {
-		if off <= b {
-			line = i
-		} else {
-			break
-		}
+	i := sort.SearchInts(offsets, b+1) - 1
+	if i < 0 {
+		i = 0
 	}
-	return line
+	return i
 }

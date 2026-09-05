@@ -26,7 +26,7 @@ go build -o cody ./cmd/cody
 ./cody <path-to-a-project>
 ```
 
-## Keybindings (phase 3)
+## Keybindings (phase 4a)
 
 - `Tab` / `Shift+Tab` — switch focus between the project tree and the editor
 - Project tree: arrows or `hjkl` to navigate, `Enter`/`l` to open a file or
