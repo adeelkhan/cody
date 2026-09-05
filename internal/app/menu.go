@@ -76,16 +76,21 @@ func renderMenuBar(width int, openMenu string) string {
 }
 
 func renderDropdown(menu string, commands []Command) string {
+	items := menuItemsFor(menu)
 	var lines []string
-	for _, name := range menuItemsFor(menu) {
+	for _, name := range items {
 		shortcut := ""
 		if cmd, ok := commandByName(commands, name); ok {
 			shortcut = cmd.Shortcut
 		}
 		lines = append(lines, fmt.Sprintf("%-10s %s", name, shortcut))
 	}
+	startCol := 0
+	if label, ok := findLabel(menu); ok {
+		startCol = label.startCol
+	}
 	return lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
 		Padding(0, 1).
+		MarginLeft(startCol).
 		Render(strings.Join(lines, "\n"))
 }

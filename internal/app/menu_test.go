@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"cody/internal/filetree"
@@ -128,5 +129,26 @@ func TestClickDropdownItemRunsCommand(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected clicking Save to produce a command")
+	}
+}
+
+func TestRenderDropdownAlignsWithHitTestModel(t *testing.T) {
+	commands := buildCommands()
+	dropdown := renderDropdown("Edit", commands)
+	lines := strings.Split(dropdown, "\n")
+	items := menuItemsFor("Edit")
+	if len(lines) != len(items) {
+		t.Fatalf("got %d rendered lines, want %d (one per item, no border rows)", len(lines), len(items))
+	}
+	label, ok := findLabel("Edit")
+	if !ok {
+		t.Fatal("expected to find the Edit label")
+	}
+	for i, line := range lines {
+		trimmed := strings.TrimLeft(line, " ")
+		indent := len(line) - len(trimmed)
+		if indent < label.startCol {
+			t.Fatalf("line %d has indent %d, want at least %d (Edit's startCol)", i, indent, label.startCol)
+		}
 	}
 }
