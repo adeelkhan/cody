@@ -88,7 +88,7 @@ func TestClickSameLabelTwiceCloses(t *testing.T) {
 	}
 }
 
-func TestClickCommandsLabelIsANoOpStub(t *testing.T) {
+func TestClickCommandsLabelOpensPalette(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, false)
 	if err != nil {
@@ -96,10 +96,10 @@ func TestClickCommandsLabelIsANoOpStub(t *testing.T) {
 	}
 	m, _ = m.clickMenuLabel("Commands")
 	if m.openMenu != "" {
-		t.Fatal("Commands is a stub in phase 2, it must not open a dropdown")
+		t.Fatal("Commands must not open a dropdown, it opens a modal palette")
 	}
-	if m.recentCommand == "" {
-		t.Fatal("expected a status message acknowledging the click")
+	if m.activeDialog != dialogPalette {
+		t.Fatalf("got activeDialog=%v, want dialogPalette", m.activeDialog)
 	}
 }
 

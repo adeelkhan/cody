@@ -46,6 +46,8 @@ type Model struct {
 	activeDialog  dialogKind
 	fileOpenInput textinput.Model
 	fileOpenError string
+	paletteFilter textinput.Model
+	paletteCursor int
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -72,20 +74,24 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if sz, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = sz.Width, sz.Height
+		paneHeight := m.height - menuBarHeight - statusBarHeight
+		editorHeight := paneHeight - terminalHeight
+		m.tree = m.tree.SetSize(treeWidth-borderSize, paneHeight-borderSize)
+		m.editor = m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
+		return m, nil
+	}
 	if m.activeDialog == dialogFileOpen {
 		return m.updateFileOpenDialog(msg)
 	}
 	if m.activeDialog == dialogAbout {
 		return m.updateAboutDialog(msg)
 	}
+	if m.activeDialog == dialogPalette {
+		return m.updatePaletteDialog(msg)
+	}
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		paneHeight := m.height - menuBarHeight - statusBarHeight
-		editorHeight := paneHeight - terminalHeight
-		m.tree = m.tree.SetSize(treeWidth-borderSize, paneHeight-borderSize)
-		m.editor = m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
-		return m, nil
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			return m.handleClick(msg.X, msg.Y)
@@ -174,7 +180,7 @@ func (m Model) clickMenuLabel(name string) (Model, tea.Cmd) {
 		}
 	case "Commands":
 		m.openMenu = ""
-		m.recentCommand = "Command palette coming in a later phase"
+		return openPalette(m)
 	case "About":
 		m.openMenu = ""
 		m.activeDialog = dialogAbout
@@ -205,6 +211,11 @@ func (m Model) View() string {
 	}
 	if m.activeDialog == dialogAbout {
 		dialog := renderAboutDialog(m.width, paneHeight)
+		return lipgloss.JoinVertical(lipgloss.Left, menuBar, dialog, status)
+	}
+	if m.activeDialog == dialogPalette {
+		matches := filteredCommands(m.commands, m.paletteFilter.Value())
+		dialog := renderPaletteDialog(m.width, paneHeight, m.paletteFilter, matches, m.paletteCursor)
 		return lipgloss.JoinVertical(lipgloss.Left, menuBar, dialog, status)
 	}
 
