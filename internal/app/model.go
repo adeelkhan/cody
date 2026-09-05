@@ -39,6 +39,8 @@ type Model struct {
 	projectName   string
 	recentCommand string
 	width, height int
+	commands      []Command
+	rootPath      string
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -55,6 +57,8 @@ func New(rootPath string, nerdFont bool) (Model, error) {
 		editor:      editor.New(),
 		focus:       focusTree,
 		projectName: filepath.Base(absPath),
+		rootPath:    absPath,
+		commands:    buildCommands(),
 	}, nil
 }
 
@@ -73,15 +77,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+q":
-			return m, tea.Quit
 		case "tab", "shift+tab":
 			m.toggleFocus()
 			return m, nil
-		case "ctrl+s":
-			var cmd tea.Cmd
-			m.editor, cmd = m.editor.Update(msg)
-			return m, cmd
+		default:
+			if cmd, ok := commandForShortcut(m.commands, msg.String()); ok {
+				return cmd.Handler(m)
+			}
 		}
 	case filetree.FileOpenedMsg:
 		editorModel, err := m.editor.LoadFile(msg.Path)
