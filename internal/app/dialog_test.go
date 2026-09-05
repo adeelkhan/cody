@@ -98,3 +98,43 @@ func TestUpdateRoutesToFileOpenDialogWhenActive(t *testing.T) {
 		t.Fatalf("got input value=%q, want %q", m.fileOpenInput.Value(), "a")
 	}
 }
+
+func TestClickAboutLabelOpensAboutDialog(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = m.clickMenuLabel("About")
+	if m.activeDialog != dialogAbout {
+		t.Fatalf("got activeDialog=%v, want dialogAbout", m.activeDialog)
+	}
+}
+
+func TestAboutDialogClosesOnAnyKey(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = m.clickMenuLabel("About")
+	updated, _ := m.updateAboutDialog(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m = updated.(Model)
+	if m.activeDialog != dialogNone {
+		t.Fatal("expected any key to close the About dialog")
+	}
+}
+
+func TestUpdateRoutesToAboutDialogWhenActive(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = m.clickMenuLabel("About")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.activeDialog != dialogNone {
+		t.Fatal("expected the root Update to route to updateAboutDialog and close it")
+	}
+}
