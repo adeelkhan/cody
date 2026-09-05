@@ -234,6 +234,27 @@ func TestMouseClickCommandsThenFilterThenEnterRunsSave(t *testing.T) {
 	}
 }
 
+func TestWindowSizeUpdatesEvenWithDialogOpen(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	m, _ = m.clickMenuLabel("About")
+	if m.activeDialog != dialogAbout {
+		t.Fatal("setup failed, expected the About dialog to be open")
+	}
+
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if m.width != 120 || m.height != 40 {
+		t.Fatalf("got width=%d height=%d, want 120x40 (resize must apply even with a dialog open)", m.width, m.height)
+	}
+}
+
 func TestViewRendersAtSmallSize(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, false)

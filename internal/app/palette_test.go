@@ -1,8 +1,10 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"cody/internal/editor"
@@ -148,7 +150,7 @@ func TestPaletteEnterExecutesSelectedCommandAndCloses(t *testing.T) {
 		t.Fatal("expected the Save command's own command to be returned")
 	}
 	msg, ok := cmd().(editor.CommandExecutedMsg)
-	if !ok || msg.Description == "" {
+	if !ok || msg.Description != "Saved a.go" {
 		t.Fatalf("got %+v, ok=%v", msg, ok)
 	}
 }
@@ -200,5 +202,52 @@ func TestUpdateRoutesToPaletteDialogWhenActive(t *testing.T) {
 	m = updated.(Model)
 	if m.paletteFilter.Value() != "s" {
 		t.Fatalf("got filter value=%q, want the root Update to route typed keys into the palette's filter input", m.paletteFilter.Value())
+	}
+}
+
+func TestRenderPaletteDialogShowsMatchesWithShortcuts(t *testing.T) {
+	commands := []Command{{Name: "Save", Shortcut: "ctrl+s"}, {Name: "Undo", Shortcut: "ctrl+z"}}
+	ti := textinput.New()
+	out := renderPaletteDialog(80, 20, ti, commands, 1)
+	if !strings.Contains(out, "Save") || !strings.Contains(out, "ctrl+s") {
+		t.Fatalf("expected a Save row with its shortcut, got %q", out)
+	}
+	if !strings.Contains(out, "Undo") || !strings.Contains(out, "ctrl+z") {
+		t.Fatalf("expected an Undo row with its shortcut, got %q", out)
+	}
+}
+
+func TestRenderPaletteDialogEmptyMatchesShowsMessage(t *testing.T) {
+	ti := textinput.New()
+	out := renderPaletteDialog(80, 20, ti, nil, 0)
+	if !strings.Contains(out, "No matching commands") {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestPaletteRunningOpenTransitionsToFileOpenDialog(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	m, _ = openPalette(m)
+	updated, _ = m.updatePaletteDialog(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("open")})
+	m = updated.(Model)
+	matches := filteredCommands(m.commands, m.paletteFilter.Value())
+	if len(matches) != 1 || matches[0].Name != "Open" {
+		t.Fatalf("setup failed, got matches=%v", matches)
+	}
+
+	updated, _ = m.updatePaletteDialog(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.activeDialog != dialogFileOpen {
+		t.Fatalf("got activeDialog=%v, want dialogFileOpen (running Open from the palette must hand off cleanly)", m.activeDialog)
+	}
+	if !strings.Contains(m.View(), "Open file:") {
+		t.Fatal("expected View() to render the file-open dialog, not leftover palette state")
 	}
 }

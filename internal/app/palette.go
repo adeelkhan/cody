@@ -80,6 +80,11 @@ func renderPaletteDialog(width, height int, filterInput textinput.Model, matches
 		}
 		lines = append(lines, line)
 	}
-	content := "Commands:\n\n" + filterInput.View() + "\n\n" + strings.Join(lines, "\n")
+	body := strings.Join(lines, "\n")
+	if len(matches) == 0 {
+		body = "No matching commands"
+	}
+	content := "Commands:\n\n" + filterInput.View() + "\n\n" + body +
+		"\n\nUp/Down to select, Enter to run, Esc to close."
 	return lipgloss.NewStyle().Width(width).Height(height).Padding(1, 2).Render(content)
 }

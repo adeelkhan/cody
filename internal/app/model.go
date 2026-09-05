@@ -74,6 +74,14 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if sz, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = sz.Width, sz.Height
+		paneHeight := m.height - menuBarHeight - statusBarHeight
+		editorHeight := paneHeight - terminalHeight
+		m.tree = m.tree.SetSize(treeWidth-borderSize, paneHeight-borderSize)
+		m.editor = m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
+		return m, nil
+	}
 	if m.activeDialog == dialogFileOpen {
 		return m.updateFileOpenDialog(msg)
 	}
@@ -84,13 +92,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updatePaletteDialog(msg)
 	}
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		paneHeight := m.height - menuBarHeight - statusBarHeight
-		editorHeight := paneHeight - terminalHeight
-		m.tree = m.tree.SetSize(treeWidth-borderSize, paneHeight-borderSize)
-		m.editor = m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
-		return m, nil
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			return m.handleClick(msg.X, msg.Y)
