@@ -264,10 +264,10 @@ func (m Model) View() string {
 	editor := m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
 
 	right := lipgloss.JoinVertical(lipgloss.Left,
-		editorStyle.Render(editor.View()),
+		editorStyle.Render(clampBlockWidth(editor.View(), m.width-treeWidth-borderSize)),
 		terminalStyle.Render("Terminal (coming in a later phase)"),
 	)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(tree.View()), right)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(clampBlockWidth(tree.View(), treeWidth-borderSize)), right)
 
 	sections := []string{menuBar}
 	if dropdown != "" {
@@ -275,4 +275,20 @@ func (m Model) View() string {
 	}
 	sections = append(sections, body, status)
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+// clampBlockWidth truncates every line of a multi-line block to at most
+// width visible columns (ANSI-aware, via lipgloss.Style.MaxWidth — which
+// truncates, unlike Style.Width which wraps). A pane's rendered block is
+// passed through this before being handed to a Style with both Width() and
+// Height() set: without it, a single line wider than that Width would get
+// hard-wrapped into multiple physical lines, and since Height() only sets a
+// minimum, never a max, those extra wrapped lines would silently overflow
+// the pane's box — the same failure this pane was already fixed against
+// for too many lines, just triggered by line width instead of line count.
+func clampBlockWidth(block string, width int) string {
+	if width <= 0 {
+		return block
+	}
+	return lipgloss.NewStyle().MaxWidth(width).Render(block)
 }

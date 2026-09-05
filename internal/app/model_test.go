@@ -436,3 +436,61 @@ func TestLargeFileDoesNotPushTheTreePaneOutOfViewAndClipsToWindowHeight(t *testi
 		t.Fatalf("got %d rendered lines, want at most the window height (24) — content must not overflow the terminal", got)
 	}
 }
+
+// Regression test: a file whose lines are wider than the editor pane must
+// not push the tree pane out of view. app/model.go composes each pane by
+// applying a Width()+Height() style to the pane's ALREADY-RENDERED
+// multi-line block (editorStyle.Render(m.editor.View())) — if any single
+// line inside that block is wider than the style's target width, Lip Gloss
+// hard-wraps it into multiple physical lines, and since Height() only sets
+// a minimum (never truncates), those extra wrapped lines silently overflow
+// the pane's box just like the original "too many lines" bug, except
+// triggered by line WIDTH instead of line COUNT.
+func TestWideLinesDoNotPushTheTreePaneOutOfViewEither(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "wide.go")
+	var b strings.Builder
+	for i := 0; i < 50; i++ {
+		b.WriteString(fmt.Sprintf("\tresult := someFunction(argumentOne, argumentTwo, argumentThree, argumentFour) // line %d with a trailing comment that makes it long\n", i))
+	}
+	if err := os.WriteFile(file, []byte(b.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "wide.go") {
+		t.Fatal("expected the tree pane (showing wide.go) to remain visible alongside a file with wide lines")
+	}
+	if got := strings.Count(view, "\n"); got > 30 {
+		t.Fatalf("got %d rendered lines, want at most the window height (30) — a wide line must not wrap and overflow the terminal", got)
+	}
+}
+
+func TestClampBlockWidthTruncatesOverlongLinesWithoutWrapping(t *testing.T) {
+	block := "short\n" + strings.Repeat("x", 50) + "\nalso short"
+	out := clampBlockWidth(block, 20)
+	lines := strings.Split(out, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d physical lines, want 3 (no wrapping)", len(lines))
+	}
+	for i, l := range lines {
+		if w := lipgloss.Width(l); w > 20 {
+			t.Fatalf("line %d: width %d exceeds cap of 20 (%q)", i, w, l)
+		}
+	}
+}
+
+func TestClampBlockWidthIsANoOpForNonPositiveWidth(t *testing.T) {
+	block := "anything\nhere"
+	if got := clampBlockWidth(block, 0); got != block {
+		t.Fatalf("got %q, want unchanged %q", got, block)
+	}
+}
