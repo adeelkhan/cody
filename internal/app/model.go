@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -42,6 +43,9 @@ type Model struct {
 	commands      []Command
 	rootPath      string
 	openMenu      string
+	activeDialog  dialogKind
+	fileOpenInput textinput.Model
+	fileOpenError string
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -68,6 +72,12 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.activeDialog == dialogFileOpen {
+		return m.updateFileOpenDialog(msg)
+	}
+	if m.activeDialog == dialogAbout {
+		return m.updateAboutDialog(msg)
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -121,6 +131,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleClick(x, y int) (tea.Model, tea.Cmd) {
+	if m.activeDialog != dialogNone {
+		return m, nil
+	}
 	if y == 0 {
 		name, ok := menuLabelAt(x)
 		if !ok {
@@ -164,6 +177,7 @@ func (m Model) clickMenuLabel(name string) (Model, tea.Cmd) {
 		m.recentCommand = "Command palette coming in a later phase"
 	case "About":
 		m.openMenu = ""
+		m.activeDialog = dialogAbout
 	}
 	return m, nil
 }
@@ -181,6 +195,18 @@ func (m Model) View() string {
 		return "loading..."
 	}
 	menuBar := renderMenuBar(m.width, m.openMenu)
+	paneHeight := m.height - menuBarHeight - statusBarHeight
+	line, col := m.editor.Cursor()
+	status := statusbar.Render(m.width, m.projectName, m.recentCommand, m.editor.Filetype(), line, col)
+
+	if m.activeDialog == dialogFileOpen {
+		dialog := renderFileOpenDialog(m.width, paneHeight, m.fileOpenInput, m.fileOpenError)
+		return lipgloss.JoinVertical(lipgloss.Left, menuBar, dialog, status)
+	}
+	if m.activeDialog == dialogAbout {
+		dialog := renderAboutDialog(m.width, paneHeight)
+		return lipgloss.JoinVertical(lipgloss.Left, menuBar, dialog, status)
+	}
 
 	var dropdown string
 	dropdownHeight := 0
@@ -189,8 +215,8 @@ func (m Model) View() string {
 		dropdownHeight = lipgloss.Height(dropdown)
 	}
 
-	paneHeight := m.height - menuBarHeight - statusBarHeight - dropdownHeight
-	editorHeight := paneHeight - terminalHeight
+	bodyHeight := paneHeight - dropdownHeight
+	editorHeight := bodyHeight - terminalHeight
 
 	treeBorderColor := unfocusedBorderColor
 	editorBorderColor := unfocusedBorderColor
@@ -204,7 +230,7 @@ func (m Model) View() string {
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(treeBorderColor).
 		Width(treeWidth - borderSize).
-		Height(paneHeight - borderSize)
+		Height(bodyHeight - borderSize)
 	editorStyle := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(editorBorderColor).
@@ -217,9 +243,6 @@ func (m Model) View() string {
 		terminalStyle.Render("Terminal (coming in a later phase)"),
 	)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(m.tree.View()), right)
-
-	line, col := m.editor.Cursor()
-	status := statusbar.Render(m.width, m.projectName, m.recentCommand, m.editor.Filetype(), line, col)
 
 	sections := []string{menuBar}
 	if dropdown != "" {
