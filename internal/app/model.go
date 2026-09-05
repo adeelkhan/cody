@@ -41,6 +41,7 @@ type Model struct {
 	width, height int
 	commands      []Command
 	rootPath      string
+	openMenu      string
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -75,11 +76,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tree = m.tree.SetSize(treeWidth-borderSize, paneHeight-borderSize)
 		m.editor = m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
 		return m, nil
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			return m.handleClick(msg.X, msg.Y)
+		}
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "tab", "shift+tab":
 			m.toggleFocus()
 			return m, nil
+		case "esc":
+			if m.openMenu != "" {
+				m.openMenu = ""
+				return m, nil
+			}
 		default:
 			if cmd, ok := commandForShortcut(m.commands, msg.String()); ok {
 				return cmd.Handler(m)
@@ -109,6 +120,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) handleClick(x, y int) (tea.Model, tea.Cmd) {
+	if y == 0 {
+		name, ok := menuLabelAt(x)
+		if !ok {
+			m.openMenu = ""
+			return m, nil
+		}
+		return m.clickMenuLabel(name)
+	}
+	if m.openMenu == "" {
+		return m, nil
+	}
+	label, ok := findLabel(m.openMenu)
+	if !ok || x < label.startCol || x >= label.startCol+dropdownWidth {
+		m.openMenu = ""
+		return m, nil
+	}
+	items := menuItemsFor(m.openMenu)
+	row := y - 1
+	if row < 0 || row >= len(items) {
+		m.openMenu = ""
+		return m, nil
+	}
+	cmd, ok := commandByName(m.commands, items[row])
+	m.openMenu = ""
+	if !ok {
+		return m, nil
+	}
+	return cmd.Handler(m)
+}
+
+func (m Model) clickMenuLabel(name string) (Model, tea.Cmd) {
+	switch name {
+	case "File", "Edit":
+		if m.openMenu == name {
+			m.openMenu = ""
+		} else {
+			m.openMenu = name
+		}
+	case "Commands":
+		m.openMenu = ""
+		m.recentCommand = "Command palette coming in a later phase"
+	case "About":
+		m.openMenu = ""
+	}
+	return m, nil
+}
+
 func (m *Model) toggleFocus() {
 	if m.focus == focusTree {
 		m.focus = focusEditor
@@ -121,9 +180,16 @@ func (m Model) View() string {
 	if m.width == 0 {
 		return "loading..."
 	}
-	menuBar := lipgloss.NewStyle().Width(m.width).Render("File  Edit  Commands  About")
+	menuBar := renderMenuBar(m.width, m.openMenu)
 
-	paneHeight := m.height - menuBarHeight - statusBarHeight
+	var dropdown string
+	dropdownHeight := 0
+	if m.openMenu != "" {
+		dropdown = renderDropdown(m.openMenu, m.commands)
+		dropdownHeight = lipgloss.Height(dropdown)
+	}
+
+	paneHeight := m.height - menuBarHeight - statusBarHeight - dropdownHeight
 	editorHeight := paneHeight - terminalHeight
 
 	treeBorderColor := unfocusedBorderColor
@@ -155,5 +221,10 @@ func (m Model) View() string {
 	line, col := m.editor.Cursor()
 	status := statusbar.Render(m.width, m.projectName, m.recentCommand, m.editor.Filetype(), line, col)
 
-	return lipgloss.JoinVertical(lipgloss.Left, menuBar, body, status)
+	sections := []string{menuBar}
+	if dropdown != "" {
+		sections = append(sections, dropdown)
+	}
+	sections = append(sections, body, status)
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
