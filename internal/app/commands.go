@@ -11,6 +11,11 @@ type Command struct {
 func buildCommands() []Command {
 	return []Command{
 		{Name: "Save", Shortcut: "ctrl+s", Handler: cmdSave},
+		{Name: "Cut", Shortcut: "ctrl+x", Handler: cmdCut},
+		{Name: "Copy", Shortcut: "ctrl+c", Handler: cmdCopy},
+		{Name: "Paste", Shortcut: "ctrl+v", Handler: cmdPaste},
+		{Name: "Undo", Shortcut: "ctrl+z", Handler: cmdUndo},
+		{Name: "Redo", Shortcut: "ctrl+y", Handler: cmdRedo},
 		{Name: "Quit", Shortcut: "ctrl+q", Handler: cmdQuit},
 	}
 }
@@ -27,6 +32,36 @@ func commandForShortcut(commands []Command, shortcut string) (Command, bool) {
 func cmdSave(m Model) (Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	return m, cmd
+}
+
+func cmdCut(m Model) (Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	return m, cmd
+}
+
+func cmdCopy(m Model) (Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	return m, cmd
+}
+
+func cmdPaste(m Model) (Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	return m, cmd
+}
+
+func cmdUndo(m Model) (Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	return m, cmd
+}
+
+func cmdRedo(m Model) (Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
 	return m, cmd
 }
 
