@@ -4,17 +4,14 @@ A terminal-based code editor written in Go.
 
 ## Status
 
-Phase 2 (command registry + core menu) of a phased build — see
+Phase 3 (command palette) of a phased build — see
 `docs/superpowers/specs/2026-09-05-cody-tui-editor-design.md` for the full
 design and `docs/superpowers/plans/` for phase-by-phase implementation plans.
 
-This phase adds: a command registry as the single dispatch path for every
-shortcut, a mouse-driven File/Edit menu bar with dropdowns, an About dialog,
-Cut/Copy/Paste with an internal clipboard and Shift+Arrow selection, and
-snapshot-based undo/redo. It does not yet have: the Commands menu's command
-palette (clicking it shows a placeholder status message), syntax
-highlighting/folding, an embedded shell, or in-buffer search — those land in
-later phases.
+This phase adds: a command palette behind the Commands menu — click it,
+type to filter by name, arrows to move the selection, Enter to run it,
+Esc to close. It does not yet have: syntax highlighting/folding, an
+embedded shell, or in-buffer search — those land in later phases.
 
 ## Build & run
 
@@ -23,7 +20,7 @@ go build -o cody ./cmd/cody
 ./cody <path-to-a-project>
 ```
 
-## Keybindings (phase 2)
+## Keybindings (phase 3)
 
 - `Tab` / `Shift+Tab` — switch focus between the project tree and the editor
 - Project tree: arrows or `hjkl` to navigate, `Enter`/`l` to open a file or
@@ -39,7 +36,8 @@ go build -o cody ./cmd/cody
 - `Ctrl+Q` — quit
 - Menu bar: click `File`/`Edit` to open a dropdown, click an item to run it,
   `Esc` or clicking elsewhere closes it; click `About` for app info; click
-  `Commands` — not implemented yet (Phase 3)
+  `Commands` to open the command palette (type to filter, arrows to move
+  the selection, `Enter` to run the selected command, `Esc` to close)
 - Shortcuts are `Ctrl+`-based on every platform — macOS `Cmd+` shortcuts
   depend on your terminal emulator's own keybinding configuration and are not
   guaranteed to reach this app (see the About dialog)

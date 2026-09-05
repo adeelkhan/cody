@@ -177,6 +177,63 @@ func TestMouseClickFileOpenThenTypeThenLoadsFile(t *testing.T) {
 	}
 }
 
+func TestMouseClickCommandsThenFilterThenEnterRunsSave(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "target.go")
+	if err := os.WriteFile(file, []byte("package main"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	// Click "Commands" (columns 12-19, row 0 — see menuLabels()).
+	updated, _ = m.Update(tea.MouseMsg{X: 12, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+	if m.activeDialog != dialogPalette {
+		t.Fatalf("got activeDialog=%v, want dialogPalette", m.activeDialog)
+	}
+
+	// Type "save" to filter down to a single match.
+	for _, r := range "save" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	matches := filteredCommands(m.commands, m.paletteFilter.Value())
+	if len(matches) != 1 || matches[0].Name != "Save" {
+		t.Fatalf("got matches=%v", matches)
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	if m.activeDialog != dialogNone {
+		t.Fatal("expected the palette to close after running the selected command")
+	}
+	// Running a command from the palette (like pressing its shortcut key
+	// directly) returns a tea.Cmd rather than updating the status bar
+	// synchronously — cmdSave's own tea.Cmd produces an
+	// editor.CommandExecutedMsg that must flow back through Model.Update
+	// for m.recentCommand to be set, exactly as the real Bubble Tea
+	// runtime loop would do it. Without this step, m.recentCommand would
+	// still hold the stale "Opened target.go" message set by the earlier
+	// FileOpenedMsg handler, and the test would pass even if Save's
+	// result never reached the status bar at all.
+	if cmd == nil {
+		t.Fatal("expected running Save from the palette to return a command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.recentCommand != "Saved target.go" {
+		t.Fatalf("got recentCommand=%q, want %q", m.recentCommand, "Saved target.go")
+	}
+}
+
 func TestViewRendersAtSmallSize(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, false)
