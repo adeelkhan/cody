@@ -37,6 +37,8 @@ func New(lang Language) (Highlighter, error) {
 			return nil, err
 		}
 		return h, nil
+	case LanguageMarkdown:
+		return newMarkdownHighlighter(), nil
 	}
 	return nil, fmt.Errorf("highlight: unsupported language %q", lang)
 }
