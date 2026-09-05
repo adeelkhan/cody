@@ -36,6 +36,8 @@ func NewFolder(lang Language) (Folder, error) {
 		f = newSitterFolder(javascript.GetLanguage(), map[string]bool{"statement_block": true})
 	case LanguageTypeScript:
 		f = newSitterFolder(typescript.GetLanguage(), map[string]bool{"statement_block": true})
+	case LanguageMarkdown:
+		f = newMarkdownFolder()
 	default:
 		return nil, fmt.Errorf("highlight: unsupported language %q", lang)
 	}
