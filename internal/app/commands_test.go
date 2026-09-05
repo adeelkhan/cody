@@ -78,7 +78,7 @@ func TestCutCommandDelegatesToEditorRegardlessOfFocus(t *testing.T) {
 }
 
 func TestEditorCommandsWorkRegardlessOfFocus(t *testing.T) {
-	shortcuts := []string{"ctrl+x", "ctrl+c", "ctrl+v", "ctrl+z", "ctrl+y"}
+	shortcuts := []string{"ctrl+x", "ctrl+c", "ctrl+v", "ctrl+z", "ctrl+y", "ctrl+k"}
 	for _, shortcut := range shortcuts {
 		t.Run(shortcut, func(t *testing.T) {
 			dir := t.TempDir()
@@ -143,6 +143,8 @@ func keyTypeFor(shortcut string) tea.KeyType {
 		return tea.KeyCtrlZ
 	case "ctrl+y":
 		return tea.KeyCtrlY
+	case "ctrl+k":
+		return tea.KeyCtrlK
 	}
 	panic("unknown shortcut: " + shortcut)
 }

@@ -78,7 +78,7 @@ func renderFileOpenDialog(width, height int, ti textinput.Model, errMsg string) 
 }
 
 func renderAboutDialog(width, height int) string {
-	content := "Cody v0.4a (Phase 4a) — a terminal code editor\n\n" +
+	content := "Cody v0.4b (Phase 4b) — a terminal code editor\n\n" +
 		"Keyboard shortcuts use Ctrl+ on every platform.\n" +
 		"macOS Cmd+ shortcuts depend on your terminal emulator's own\n" +
 		"keybinding settings and are not guaranteed to reach this app.\n\n" +

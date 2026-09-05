@@ -11,8 +11,16 @@ design and `docs/superpowers/plans/` for phase-by-phase implementation plans.
 This phase adds folding for function/block bodies (Go, Python, JavaScript,
 TypeScript) and Markdown sections/code blocks — `Ctrl+K` toggles the fold
 at the cursor's line, collapsing it to a single summary line. Editing the
-file clears all fold state. It does not yet have: an embedded shell or
-in-buffer search — those land in later phases.
+file clears all fold state. JSON folding (and highlighting) remains
+deferred — the underlying tree-sitter library has no ready-made JSON
+grammar. It does not yet have: an embedded shell or in-buffer search —
+those land in later phases.
+
+Building this phase requires a C compiler on your machine (CGO), since
+tree-sitter's grammars are C libraries — this was already noted as a
+tradeoff in the design doc's tech stack section, and matters even more
+now that folding adds a second tree-sitter dependency surface alongside
+highlighting.
 
 ## Build & run
 

@@ -194,6 +194,7 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		m.cursorCol = 0
 		m.highlightGeneration++
 		m.foldedStartLines = nil
+		m.folds = nil
 		return m, scheduleRehighlight(m.highlightGeneration)
 	case "backspace":
 		m.selecting = false
@@ -201,6 +202,7 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		m.cursorLine, m.cursorCol = m.buf.DeleteBefore(m.cursorLine, m.cursorCol)
 		m.highlightGeneration++
 		m.foldedStartLines = nil
+		m.folds = nil
 		return m, scheduleRehighlight(m.highlightGeneration)
 	case "ctrl+s":
 		desc := m.save()
@@ -212,6 +214,7 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		m.cursorCol++
 		m.highlightGeneration++
 		m.foldedStartLines = nil
+		m.folds = nil
 		return m, scheduleRehighlight(m.highlightGeneration)
 	case "ctrl+x":
 		desc := m.Cut()
@@ -250,6 +253,7 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 			m.insertText(string(keyMsg.Runes))
 			m.highlightGeneration++
 			m.foldedStartLines = nil
+			m.folds = nil
 			return m, scheduleRehighlight(m.highlightGeneration)
 		}
 	}
@@ -257,6 +261,9 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) isLineHidden(line int) bool {
+	if len(m.foldedStartLines) == 0 {
+		return false
+	}
 	for _, f := range m.folds {
 		if m.foldedStartLines[f.StartLine] && line > f.StartLine && line <= f.EndLine {
 			return true
