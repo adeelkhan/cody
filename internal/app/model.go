@@ -46,6 +46,8 @@ type Model struct {
 	activeDialog  dialogKind
 	fileOpenInput textinput.Model
 	fileOpenError string
+	paletteFilter textinput.Model
+	paletteCursor int
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -77,6 +79,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.activeDialog == dialogAbout {
 		return m.updateAboutDialog(msg)
+	}
+	if m.activeDialog == dialogPalette {
+		return m.updatePaletteDialog(msg)
 	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -174,7 +179,7 @@ func (m Model) clickMenuLabel(name string) (Model, tea.Cmd) {
 		}
 	case "Commands":
 		m.openMenu = ""
-		m.recentCommand = "Command palette coming in a later phase"
+		return openPalette(m)
 	case "About":
 		m.openMenu = ""
 		m.activeDialog = dialogAbout
@@ -205,6 +210,11 @@ func (m Model) View() string {
 	}
 	if m.activeDialog == dialogAbout {
 		dialog := renderAboutDialog(m.width, paneHeight)
+		return lipgloss.JoinVertical(lipgloss.Left, menuBar, dialog, status)
+	}
+	if m.activeDialog == dialogPalette {
+		matches := filteredCommands(m.commands, m.paletteFilter.Value())
+		dialog := renderPaletteDialog(m.width, paneHeight, m.paletteFilter, matches, m.paletteCursor)
 		return lipgloss.JoinVertical(lipgloss.Left, menuBar, dialog, status)
 	}
 

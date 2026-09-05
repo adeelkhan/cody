@@ -15,6 +15,7 @@ const (
 	dialogNone dialogKind = iota
 	dialogFileOpen
 	dialogAbout
+	dialogPalette
 )
 
 func cmdOpenFilePrompt(m Model) (Model, tea.Cmd) {
