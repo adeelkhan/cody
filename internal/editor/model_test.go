@@ -606,3 +606,139 @@ func TestMarkdownFileHighlightsThroughEditorView(t *testing.T) {
 		t.Fatal("expected the rendered Markdown view to contain ANSI escape codes for the heading")
 	}
 }
+
+func TestLoadFileDetectsFoldsForAGoFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	src := "package main\n\nfunc add(a int, b int) int {\n\treturn a + 42\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range m.folds {
+		if f.StartLine == 2 && f.EndLine == 4 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a fold spanning lines 2-4, got %v", m.folds)
+	}
+}
+
+func TestCtrlKTogglesFoldAtCursor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	src := "package main\n\nfunc add(a int, b int) int {\n\treturn a + 42\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if m.cursorLine != 2 {
+		t.Fatalf("setup failed: expected cursor on line 2, got %d", m.cursorLine)
+	}
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	if cmd == nil {
+		t.Fatal("expected ctrl+k to produce a status message")
+	}
+	if !m.foldedStartLines[2] {
+		t.Fatal("expected line 2's fold to be collapsed after ctrl+k")
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	if m.foldedStartLines[2] {
+		t.Fatal("expected a second ctrl+k to re-expand the fold")
+	}
+}
+
+func TestCtrlKWithNothingFoldableAtCursorIsANoOp(t *testing.T) {
+	m := setupEditor(t, "package main\n")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	if cmd == nil {
+		t.Fatal("expected a status message even when nothing is foldable")
+	}
+	msg := cmd().(CommandExecutedMsg)
+	if msg.Description != "Nothing to fold here" {
+		t.Fatalf("got %q", msg.Description)
+	}
+}
+
+func TestFoldedRegionIsHiddenFromViewAndNavigation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	src := "package main\n\nfunc add(a int, b int) int {\n\treturn a + 42\n}\n\nvar x = 1\n"
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	if !m.foldedStartLines[2] {
+		t.Fatal("setup failed: expected line 2's fold to be collapsed")
+	}
+
+	view := m.View()
+	if strings.Contains(view, "return a + 42") {
+		t.Fatal("expected the folded line's content to be hidden from View()")
+	}
+
+	// The fold spans lines 2-4 (the "{" line through the "}" line), so its
+	// hidden interior is lines 3-4; line 5 (the blank separator line before
+	// "var x = 1") is outside the fold and stays visible. Moving down from
+	// the fold's start line must skip straight past the hidden interior to
+	// that next visible line, not land on a hidden line.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.cursorLine != 5 {
+		t.Fatalf("got cursorLine=%d, want 5 (skipping the folded lines 3-4)", m.cursorLine)
+	}
+
+	// One more down-press should reach "var x = 1" (line 6).
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.cursorLine != 6 {
+		t.Fatalf("got cursorLine=%d, want 6", m.cursorLine)
+	}
+}
+
+func TestEditingClearsAllFoldState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	src := "package main\n\nfunc add(a int, b int) int {\n\treturn a + 42\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	if !m.foldedStartLines[2] {
+		t.Fatal("setup failed: expected line 2's fold to be collapsed")
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	if m.foldedStartLines[2] {
+		t.Fatal("expected an edit to clear fold-toggle state")
+	}
+}
