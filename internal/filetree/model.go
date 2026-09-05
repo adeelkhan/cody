@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"cody/internal/scrollbar"
 )
@@ -12,6 +13,12 @@ import (
 type FileOpenedMsg struct {
 	Path string
 }
+
+// scrollbarGutterWidth reserves one space plus one rune for the scrollbar
+// column appended to each rendered row.
+const scrollbarGutterWidth = 2
+
+var scrollbarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 type flatItem struct {
 	node  *Node
@@ -158,8 +165,13 @@ func (m Model) View() string {
 	}
 
 	var bar []rune
+	contentWidth := 0
 	if clip {
 		bar = scrollbar.Column(len(m.flat), viewEnd-viewStart, viewStart)
+		contentWidth = m.width - scrollbarGutterWidth
+		if contentWidth < 0 {
+			contentWidth = 0
+		}
 	}
 
 	var b strings.Builder
@@ -174,7 +186,12 @@ func (m Model) View() string {
 			line = "  " + line
 		}
 		if clip {
-			line += " " + string(bar[idx-viewStart])
+			// Pad to the pane's known content width so the bar lands in a
+			// fixed column at the right edge, forming a straight vertical
+			// scrollbar — appending it directly after variable-length text
+			// makes it look like a stray character attached to each line.
+			padded := lipgloss.NewStyle().Width(contentWidth).Render(line)
+			line = padded + " " + scrollbarStyle.Render(string(bar[idx-viewStart]))
 		}
 		b.WriteString(line)
 		b.WriteString("\n")

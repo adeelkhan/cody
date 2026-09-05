@@ -24,6 +24,12 @@ type RehighlightMsg struct {
 
 const highlightDebounce = 150 * time.Millisecond
 
+// scrollbarGutterWidth reserves one space plus one rune for the scrollbar
+// column appended to each rendered row.
+const scrollbarGutterWidth = 2
+
+var scrollbarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
 func scheduleRehighlight(generation int) tea.Cmd {
 	return tea.Tick(highlightDebounce, func(time.Time) tea.Msg {
 		return RehighlightMsg{generation: generation}
@@ -548,8 +554,13 @@ func (m Model) View() string {
 	}
 
 	var bar []rune
+	contentWidth := 0
 	if clip {
 		bar = scrollbar.Column(len(rows), viewEnd-viewStart, viewStart)
+		contentWidth = m.width - scrollbarGutterWidth
+		if contentWidth < 0 {
+			contentWidth = 0
+		}
 	}
 
 	var b strings.Builder
@@ -571,7 +582,12 @@ func (m Model) View() string {
 		}
 		row := fmt.Sprintf("%s%4d %s", cursorMark, i+1, rendered)
 		if clip {
-			row += " " + string(bar[idx-viewStart])
+			// Pad to the pane's known content width so the bar lands in a
+			// fixed column at the right edge, forming a straight vertical
+			// scrollbar — appending it directly after variable-length text
+			// makes it look like a stray character attached to each line.
+			padded := lipgloss.NewStyle().Width(contentWidth).Render(row)
+			row = padded + " " + scrollbarStyle.Render(string(bar[idx-viewStart]))
 		}
 		b.WriteString(row)
 		b.WriteString("\n")

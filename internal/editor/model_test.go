@@ -826,3 +826,46 @@ func TestViewHasNoScrollbarMarksWhenContentFitsTheHeight(t *testing.T) {
 		t.Fatal("expected no scrollbar marks when content fits within the viewport")
 	}
 }
+
+// Regression test: the scrollbar rune must land in the same column on every
+// rendered row, regardless of how long that row's own text is. Appending it
+// directly after variable-length text (the original bug) makes it drift to
+// a different column per line, which reads as a stray character attached to
+// the text rather than a scrollbar.
+func TestScrollbarColumnStaysAlignedAcrossLinesOfDifferentLengths(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "varied.txt")
+	src := "a\nbb\nccc\ndddd\neeeee\nffffff\n"
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.SetSize(40, 3)
+
+	view := m.View()
+	renderedLines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	if len(renderedLines) == 0 {
+		t.Fatal("expected at least one rendered line")
+	}
+	col := -1
+	for _, l := range renderedLines {
+		idx := -1
+		for i, r := range []rune(l) {
+			if r == '█' || r == '│' {
+				idx = i
+			}
+		}
+		if idx < 0 {
+			t.Fatalf("expected a scrollbar rune in line %q", l)
+		}
+		if col == -1 {
+			col = idx
+		} else if idx != col {
+			t.Fatalf("scrollbar column drifted: got %d, want %d (line %q)", idx, col, l)
+		}
+	}
+}
