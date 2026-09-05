@@ -3,10 +3,13 @@ package editor
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"cody/internal/highlight"
 )
 
 type CommandExecutedMsg struct {
@@ -14,17 +17,19 @@ type CommandExecutedMsg struct {
 }
 
 type Model struct {
-	buf           *Buffer
-	cursorLine    int
-	cursorCol     int
-	width         int
-	height        int
-	selecting     bool
-	selAnchorLine int
-	selAnchorCol  int
-	clipboard     string
-	undoStack     []undoSnapshot
-	redoStack     []undoSnapshot
+	buf            *Buffer
+	cursorLine     int
+	cursorCol      int
+	width          int
+	height         int
+	selecting      bool
+	selAnchorLine  int
+	selAnchorCol   int
+	clipboard      string
+	undoStack      []undoSnapshot
+	redoStack      []undoSnapshot
+	highlighter    highlight.Highlighter
+	highlightSpans map[int][]highlight.LineSpan
 }
 
 type undoSnapshot struct {
@@ -50,7 +55,29 @@ func (m Model) LoadFile(path string) (Model, error) {
 	m.selAnchorCol = 0
 	m.undoStack = nil
 	m.redoStack = nil
+	m.highlighter = nil
+	m.highlightSpans = nil
+	if lang, ok := highlight.LanguageForPath(path); ok {
+		if h, err := highlight.New(lang); err == nil {
+			m.highlighter = h
+		}
+	}
+	m.rehighlight()
 	return m, nil
+}
+
+func (m *Model) rehighlight() {
+	if m.highlighter == nil || m.buf == nil {
+		m.highlightSpans = nil
+		return
+	}
+	source := []byte(strings.Join(m.buf.Lines, "\n"))
+	spans, err := m.highlighter.Highlight(source)
+	if err != nil {
+		m.highlightSpans = nil
+		return
+	}
+	m.highlightSpans = highlight.LineSpans(source, spans)
 }
 
 func (m Model) SetSize(width, height int) Model {
@@ -328,9 +355,41 @@ func (m Model) View() string {
 		rendered := line
 		if hasSel && i >= startLine && i <= endLine {
 			rendered = highlightSelection(line, i, startLine, startCol, endLine, endCol)
+		} else if spans, ok := m.highlightSpans[i]; ok {
+			rendered = renderHighlightedLine(line, spans)
 		}
 		b.WriteString(fmt.Sprintf("%s%4d %s\n", cursorMark, i+1, rendered))
 	}
+	return b.String()
+}
+
+func renderHighlightedLine(line string, spans []highlight.LineSpan) string {
+	runes := []rune(line)
+	sorted := make([]highlight.LineSpan, len(spans))
+	copy(sorted, spans)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].StartCol < sorted[j].StartCol })
+	var b strings.Builder
+	pos := 0
+	for _, sp := range sorted {
+		start, end := sp.StartCol, sp.EndCol
+		if start < pos {
+			continue
+		}
+		if start > len(runes) {
+			break
+		}
+		if end > len(runes) {
+			end = len(runes)
+		}
+		b.WriteString(string(runes[pos:start]))
+		if style, ok := highlight.StyleFor(sp.Capture); ok {
+			b.WriteString(style.Render(string(runes[start:end])))
+		} else {
+			b.WriteString(string(runes[start:end]))
+		}
+		pos = end
+	}
+	b.WriteString(string(runes[pos:]))
 	return b.String()
 }
 

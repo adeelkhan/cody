@@ -344,3 +344,69 @@ func TestCommandKeysReportNoFileOpenWithoutABuffer(t *testing.T) {
 		t.Fatalf("got %q", msg.Description)
 	}
 }
+
+func TestLoadFileHighlightsAGoFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.highlightSpans) == 0 {
+		t.Fatal("expected highlightSpans to be populated for a .go file")
+	}
+	view := m.View()
+	if view == "" {
+		t.Fatal("expected a non-empty rendered view")
+	}
+}
+
+func TestLoadFileUnsupportedExtensionHasNoHighlighter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.bin")
+	if err := os.WriteFile(path, []byte("just bytes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.highlighter != nil {
+		t.Fatal("expected no highlighter for an unsupported extension")
+	}
+	if view := m.View(); view == "" {
+		t.Fatal("expected plain-text rendering to still work with no highlighter")
+	}
+}
+
+func TestLoadFileResetsHighlightStateAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	goPath := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(goPath, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	txtPath := filepath.Join(dir, "b.bin")
+	if err := os.WriteFile(txtPath, []byte("plain"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(goPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.highlightSpans) == 0 {
+		t.Fatal("setup failed: expected highlight spans after loading a .go file")
+	}
+	m, err = m.LoadFile(txtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.highlighter != nil || len(m.highlightSpans) != 0 {
+		t.Fatal("expected highlighter and highlightSpans to be cleared after switching to an unsupported file")
+	}
+}
