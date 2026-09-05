@@ -186,15 +186,28 @@ func (m Model) View() string {
 			line = "  " + line
 		}
 		if clip {
-			// Pad to the pane's known content width so the bar lands in a
-			// fixed column at the right edge, forming a straight vertical
-			// scrollbar — appending it directly after variable-length text
-			// makes it look like a stray character attached to each line.
-			padded := lipgloss.NewStyle().Width(contentWidth).Render(line)
-			line = padded + " " + scrollbarStyle.Render(string(bar[idx-viewStart]))
+			// Pad (never wrap or truncate) to the pane's known content width
+			// so the bar lands in a fixed column at the right edge, forming
+			// a straight vertical scrollbar — appending it directly after
+			// variable-length text makes it look like a stray character
+			// attached to each line. lipgloss.Style.Width().Render() was
+			// tried here first, but it hard-wraps rows wider than the
+			// target width instead of leaving them alone, which silently
+			// reintroduces multi-line overflow per row — padRow only pads.
+			line = padRow(line, contentWidth) + " " + scrollbarStyle.Render(string(bar[idx-viewStart]))
 		}
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// padRow right-pads row with spaces to reach the given visible (ANSI-aware)
+// width. Rows already at or beyond that width are returned unchanged —
+// never wrapped, never truncated.
+func padRow(row string, width int) string {
+	if pad := width - lipgloss.Width(row); pad > 0 {
+		return row + strings.Repeat(" ", pad)
+	}
+	return row
 }

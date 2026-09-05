@@ -178,3 +178,28 @@ func TestScrollbarColumnStaysAlignedAcrossNamesOfDifferentLengths(t *testing.T) 
 		}
 	}
 }
+
+// Regression test: padding a row to the pane's content width must never
+// wrap or truncate a row that's already wider than that width — an earlier
+// version of this fix used lipgloss.Style.Width().Render(), which silently
+// hard-wraps overlong rows into multiple physical lines, defeating the
+// viewport-clipping fix (a pane's rendered output must never exceed its
+// set height).
+func TestPaddingALongNameDoesNotWrapItIntoMultiplePhysicalLines(t *testing.T) {
+	dir := t.TempDir()
+	longName := strings.Repeat("x", 100) + ".go"
+	mustWriteFile(t, filepath.Join(dir, longName), "")
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.SetSize(40, 3)
+
+	view := m.View()
+	if got := strings.Count(view, "\n"); got != 1 {
+		t.Fatalf("got %d physical lines, want 1 — a name wider than the pane must not wrap", got)
+	}
+	if !strings.Contains(view, longName) {
+		t.Fatal("expected the long name's full content to still be present, unwrapped")
+	}
+}
