@@ -1,8 +1,10 @@
 package filetree
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -69,5 +71,69 @@ func TestEnterOnDirExpands(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if len(m.flat) <= before {
 		t.Fatalf("expected flat list to grow after expanding, got %d -> %d", before, len(m.flat))
+	}
+}
+
+func setupModelWithNFiles(t *testing.T, n int) Model {
+	t.Helper()
+	dir := t.TempDir()
+	for i := 0; i < n; i++ {
+		mustWriteFile(t, filepath.Join(dir, fmt.Sprintf("file%02d.go", i)), "")
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestViewIsUnboundedWhenHeightIsNeverSet(t *testing.T) {
+	m := setupModelWithNFiles(t, 20)
+	view := m.View()
+	if got := strings.Count(view, "\n"); got != len(m.flat) {
+		t.Fatalf("got %d rendered lines, want %d (unbounded)", got, len(m.flat))
+	}
+}
+
+func TestViewClipsRenderedLinesToTheSetHeight(t *testing.T) {
+	m := setupModelWithNFiles(t, 20)
+	m = m.SetSize(40, 5)
+	view := m.View()
+	if got := strings.Count(view, "\n"); got != 5 {
+		t.Fatalf("got %d rendered lines, want 5", got)
+	}
+}
+
+func TestMovingCursorPastViewportScrollsTheTree(t *testing.T) {
+	m := setupModelWithNFiles(t, 20)
+	m = m.SetSize(40, 5)
+	firstName := m.flat[0].node.Name
+	for i := 0; i < 7; i++ {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	view := m.View()
+	if strings.Contains(view, firstName) {
+		t.Fatal("expected the first item to have scrolled out of view")
+	}
+	if !strings.Contains(view, m.flat[m.cursor].node.Name) {
+		t.Fatal("expected the selected item to be visible")
+	}
+}
+
+func TestViewIncludesAScrollbarWhenContentOverflowsHeight(t *testing.T) {
+	m := setupModelWithNFiles(t, 20)
+	m = m.SetSize(40, 5)
+	view := m.View()
+	if !strings.ContainsRune(view, '█') && !strings.ContainsRune(view, '│') {
+		t.Fatal("expected a scrollbar thumb or track when content overflows the viewport")
+	}
+}
+
+func TestViewHasNoScrollbarMarksWhenContentFitsTheHeight(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.SetSize(40, 10)
+	view := m.View()
+	if strings.ContainsRune(view, '█') || strings.ContainsRune(view, '│') {
+		t.Fatal("expected no scrollbar marks when content fits within the viewport")
 	}
 }

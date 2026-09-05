@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -740,5 +741,88 @@ func TestEditingClearsAllFoldState(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
 	if m.foldedStartLines[2] {
 		t.Fatal("expected an edit to clear fold-toggle state")
+	}
+}
+
+func setupLargeFile(t *testing.T, numLines int) Model {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.txt")
+	lines := make([]string, numLines)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line%d", i)
+	}
+	src := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestViewIsUnboundedWhenHeightIsNeverSet(t *testing.T) {
+	m := setupLargeFile(t, 20)
+	view := m.View()
+	// setupLargeFile's source ends with "\n", so strings.Split produces one
+	// extra trailing empty line (Buffer's existing, pre-existing behavior) —
+	// 20 content lines + 1 trailing empty line = 21 buffer lines total.
+	if got := strings.Count(view, "\n"); got != 21 {
+		t.Fatalf("got %d rendered lines, want all 21 (unbounded)", got)
+	}
+}
+
+func TestViewClipsRenderedLinesToTheSetHeight(t *testing.T) {
+	m := setupLargeFile(t, 20)
+	m = m.SetSize(80, 5)
+
+	view := m.View()
+	if got := strings.Count(view, "\n"); got != 5 {
+		t.Fatalf("got %d rendered lines, want 5", got)
+	}
+	if !strings.Contains(view, "line0") {
+		t.Fatal("expected the first line to be visible before any scrolling")
+	}
+	if strings.Contains(view, "line5") {
+		t.Fatal("expected line5 to be outside the initial 5-line viewport")
+	}
+}
+
+func TestMovingCursorPastViewportScrollsTheEditor(t *testing.T) {
+	m := setupLargeFile(t, 20)
+	m = m.SetSize(80, 5)
+
+	for i := 0; i < 7; i++ {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	view := m.View()
+	if strings.Contains(view, "line0") {
+		t.Fatal("expected line0 to have scrolled out of view")
+	}
+	if !strings.Contains(view, "line7") {
+		t.Fatal("expected line7 (the cursor's line) to be visible")
+	}
+}
+
+func TestViewIncludesAScrollbarWhenContentOverflowsHeight(t *testing.T) {
+	m := setupLargeFile(t, 20)
+	m = m.SetSize(80, 5)
+
+	view := m.View()
+	if !strings.ContainsRune(view, '█') && !strings.ContainsRune(view, '│') {
+		t.Fatal("expected a scrollbar thumb or track when content overflows the viewport")
+	}
+}
+
+func TestViewHasNoScrollbarMarksWhenContentFitsTheHeight(t *testing.T) {
+	m := setupLargeFile(t, 3)
+	m = m.SetSize(80, 10)
+
+	view := m.View()
+	if strings.ContainsRune(view, '█') || strings.ContainsRune(view, '│') {
+		t.Fatal("expected no scrollbar marks when content fits within the viewport")
 	}
 }

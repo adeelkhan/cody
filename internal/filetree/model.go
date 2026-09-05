@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"cody/internal/scrollbar"
 )
 
 type FileOpenedMsg struct {
@@ -17,12 +19,13 @@ type flatItem struct {
 }
 
 type Model struct {
-	root     *Node
-	nerdFont bool
-	flat     []flatItem
-	cursor   int
-	width    int
-	height   int
+	root         *Node
+	nerdFont     bool
+	flat         []flatItem
+	cursor       int
+	width        int
+	height       int
+	scrollOffset int
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -51,6 +54,7 @@ func (m *Model) rebuildFlat() {
 
 func (m Model) SetSize(width, height int) Model {
 	m.width, m.height = width, height
+	m.ensureCursorVisible()
 	return m
 }
 
@@ -59,6 +63,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+	var cmd tea.Cmd
 	switch keyMsg.String() {
 	case "up", "k":
 		if m.cursor > 0 {
@@ -71,9 +76,36 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case "left", "h":
 		m.collapseCurrent()
 	case "right", "l", "enter":
-		return m.activateCurrent()
+		m, cmd = m.activateCurrent()
 	}
-	return m, nil
+	m.ensureCursorVisible()
+	return m, cmd
+}
+
+// ensureCursorVisible scrolls the viewport so the selected item stays
+// within it. A no-op when no height has ever been set (m.height <= 0),
+// which preserves the unbounded rendering every pre-existing caller relies
+// on.
+func (m *Model) ensureCursorVisible() {
+	if m.height <= 0 {
+		return
+	}
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	}
+	if m.cursor >= m.scrollOffset+m.height {
+		m.scrollOffset = m.cursor - m.height + 1
+	}
+	maxOffset := len(m.flat) - m.height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
 }
 
 func (m *Model) collapseCurrent() {
@@ -109,15 +141,40 @@ func (m Model) activateCurrent() (Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	clip := m.height > 0
+	viewStart, viewEnd := 0, len(m.flat)
+	if clip {
+		viewStart = m.scrollOffset
+		if viewStart < 0 {
+			viewStart = 0
+		}
+		if viewStart > len(m.flat) {
+			viewStart = len(m.flat)
+		}
+		viewEnd = viewStart + m.height
+		if viewEnd > len(m.flat) {
+			viewEnd = len(m.flat)
+		}
+	}
+
+	var bar []rune
+	if clip {
+		bar = scrollbar.Column(len(m.flat), viewEnd-viewStart, viewStart)
+	}
+
 	var b strings.Builder
-	for i, item := range m.flat {
+	for idx := viewStart; idx < viewEnd; idx++ {
+		item := m.flat[idx]
 		prefix := strings.Repeat("  ", item.depth)
 		icon := IconFor(item.node, m.nerdFont)
 		line := fmt.Sprintf("%s%s %s", prefix, icon, item.node.Name)
-		if i == m.cursor {
+		if idx == m.cursor {
 			line = "> " + line
 		} else {
 			line = "  " + line
+		}
+		if clip {
+			line += " " + string(bar[idx-viewStart])
 		}
 		b.WriteString(line)
 		b.WriteString("\n")

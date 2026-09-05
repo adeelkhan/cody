@@ -254,11 +254,20 @@ func (m Model) View() string {
 		Height(editorHeight - borderSize)
 	terminalStyle := lipgloss.NewStyle().Width(m.width - treeWidth).Height(terminalHeight)
 
+	// Re-derive each pane's exact interior height right before rendering
+	// (on this value-receiver copy of m, so nothing here mutates the real
+	// model) instead of trusting whatever was last set on a WindowSizeMsg —
+	// that height doesn't account for a transient dropdown's height, and a
+	// stale height would let a pane's content silently overflow its box,
+	// since Lip Gloss's Height() only sets a minimum, never a max.
+	tree := m.tree.SetSize(treeWidth-borderSize, bodyHeight-borderSize)
+	editor := m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
+
 	right := lipgloss.JoinVertical(lipgloss.Left,
-		editorStyle.Render(m.editor.View()),
+		editorStyle.Render(editor.View()),
 		terminalStyle.Render("Terminal (coming in a later phase)"),
 	)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(m.tree.View()), right)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(tree.View()), right)
 
 	sections := []string{menuBar}
 	if dropdown != "" {

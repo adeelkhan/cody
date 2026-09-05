@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"cody/internal/highlight"
+	"cody/internal/scrollbar"
 )
 
 type CommandExecutedMsg struct {
@@ -47,6 +48,7 @@ type Model struct {
 	folder              highlight.Folder
 	folds               []highlight.LineRange
 	foldedStartLines    map[int]bool
+	scrollOffset        int
 }
 
 type undoSnapshot struct {
@@ -77,6 +79,7 @@ func (m Model) LoadFile(path string) (Model, error) {
 	m.folder = nil
 	m.folds = nil
 	m.foldedStartLines = nil
+	m.scrollOffset = 0
 	if lang, ok := highlight.LanguageForPath(path); ok {
 		if h, err := highlight.New(lang); err == nil {
 			m.highlighter = h
@@ -121,6 +124,7 @@ func (m *Model) refold() {
 
 func (m Model) SetSize(width, height int) Model {
 	m.width, m.height = width, height
+	m.ensureCursorVisible()
 	return m
 }
 
@@ -145,6 +149,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if m.buf != nil && msg.generation == m.highlightGeneration {
 			m.rehighlight()
 			m.refold()
+			m.ensureCursorVisible()
 		}
 		return m, nil
 	case tea.KeyMsg:
@@ -161,6 +166,7 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	var cmd tea.Cmd
 	switch keyMsg.String() {
 	case "up":
 		m.selecting = false
@@ -195,7 +201,7 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		m.highlightGeneration++
 		m.foldedStartLines = nil
 		m.folds = nil
-		return m, scheduleRehighlight(m.highlightGeneration)
+		cmd = scheduleRehighlight(m.highlightGeneration)
 	case "backspace":
 		m.selecting = false
 		m.pushUndo()
@@ -203,10 +209,10 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		m.highlightGeneration++
 		m.foldedStartLines = nil
 		m.folds = nil
-		return m, scheduleRehighlight(m.highlightGeneration)
+		cmd = scheduleRehighlight(m.highlightGeneration)
 	case "ctrl+s":
 		desc := m.save()
-		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
+		cmd = func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case " ":
 		m.selecting = false
 		m.pushUndo()
@@ -215,37 +221,37 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		m.highlightGeneration++
 		m.foldedStartLines = nil
 		m.folds = nil
-		return m, scheduleRehighlight(m.highlightGeneration)
+		cmd = scheduleRehighlight(m.highlightGeneration)
 	case "ctrl+x":
 		desc := m.Cut()
 		m.highlightGeneration++
 		m.rehighlight()
 		m.refold()
-		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
+		cmd = func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+c":
 		desc := m.Copy()
-		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
+		cmd = func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+v":
 		desc := m.Paste()
 		m.highlightGeneration++
 		m.rehighlight()
 		m.refold()
-		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
+		cmd = func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+z":
 		desc := m.undo()
 		m.highlightGeneration++
 		m.rehighlight()
 		m.refold()
-		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
+		cmd = func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+y":
 		desc := m.redo()
 		m.highlightGeneration++
 		m.rehighlight()
 		m.refold()
-		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
+		cmd = func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+k":
 		desc := m.toggleFold()
-		return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
+		cmd = func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	default:
 		if keyMsg.Type == tea.KeyRunes && !keyMsg.Alt {
 			m.selecting = false
@@ -254,10 +260,11 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 			m.highlightGeneration++
 			m.foldedStartLines = nil
 			m.folds = nil
-			return m, scheduleRehighlight(m.highlightGeneration)
+			cmd = scheduleRehighlight(m.highlightGeneration)
 		}
 	}
-	return m, nil
+	m.ensureCursorVisible()
+	return m, cmd
 }
 
 func (m Model) isLineHidden(line int) bool {
@@ -270,6 +277,58 @@ func (m Model) isLineHidden(line int) bool {
 		}
 	}
 	return false
+}
+
+func (m Model) visibleLines() []int {
+	lines := make([]int, 0, len(m.buf.Lines))
+	for i := range m.buf.Lines {
+		if !m.isLineHidden(i) {
+			lines = append(lines, i)
+		}
+	}
+	return lines
+}
+
+// ensureCursorVisible scrolls the viewport so the cursor's line stays
+// within it. A no-op when no height has ever been set (m.height <= 0),
+// which preserves the unbounded rendering every pre-existing caller relies
+// on.
+func (m *Model) ensureCursorVisible() {
+	if m.height <= 0 || m.buf == nil {
+		return
+	}
+	rows := m.visibleLines()
+	pos := -1
+	for i, line := range rows {
+		if line == m.cursorLine {
+			pos = i
+			break
+		}
+	}
+	if pos < 0 {
+		// The cursor's own line is never folded-hidden today (toggleFold only
+		// hides lines strictly after a fold's start line, and the cursor sits
+		// on the start line when a fold is toggled), so this is unreachable
+		// under current invariants. If a future feature can place the cursor
+		// on a hidden line, this silently stops re-clamping scrollOffset.
+		return
+	}
+	if pos < m.scrollOffset {
+		m.scrollOffset = pos
+	}
+	if pos >= m.scrollOffset+m.height {
+		m.scrollOffset = pos - m.height + 1
+	}
+	maxOffset := len(rows) - m.height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
 }
 
 func (m Model) foldAt(line int) (highlight.LineRange, bool) {
@@ -470,11 +529,33 @@ func (m Model) View() string {
 		return "Select a file to begin"
 	}
 	startLine, startCol, endLine, endCol, hasSel := m.selectionRange()
-	var b strings.Builder
-	for i, line := range m.buf.Lines {
-		if m.isLineHidden(i) {
-			continue
+	rows := m.visibleLines()
+
+	clip := m.height > 0
+	viewStart, viewEnd := 0, len(rows)
+	if clip {
+		viewStart = m.scrollOffset
+		if viewStart < 0 {
+			viewStart = 0
 		}
+		if viewStart > len(rows) {
+			viewStart = len(rows)
+		}
+		viewEnd = viewStart + m.height
+		if viewEnd > len(rows) {
+			viewEnd = len(rows)
+		}
+	}
+
+	var bar []rune
+	if clip {
+		bar = scrollbar.Column(len(rows), viewEnd-viewStart, viewStart)
+	}
+
+	var b strings.Builder
+	for idx := viewStart; idx < viewEnd; idx++ {
+		i := rows[idx]
+		line := m.buf.Lines[i]
 		cursorMark := "  "
 		if i == m.cursorLine {
 			cursorMark = "> "
@@ -488,7 +569,12 @@ func (m Model) View() string {
 		if m.foldedStartLines[i] {
 			rendered += " ⋯"
 		}
-		b.WriteString(fmt.Sprintf("%s%4d %s\n", cursorMark, i+1, rendered))
+		row := fmt.Sprintf("%s%4d %s", cursorMark, i+1, rendered)
+		if clip {
+			row += " " + string(bar[idx-viewStart])
+		}
+		b.WriteString(row)
+		b.WriteString("\n")
 	}
 	return b.String()
 }

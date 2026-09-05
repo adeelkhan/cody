@@ -16,6 +16,12 @@ deferred — the underlying tree-sitter library has no ready-made JSON
 grammar. It does not yet have: an embedded shell or in-buffer search —
 those land in later phases.
 
+The project tree and editor panes each scroll independently and stay
+clipped to their box's height — opening a large file no longer pushes the
+tree pane out of view. Each pane shows a vertical scrollbar (`█`/`│`) when
+its content overflows the visible area, and auto-scrolls to keep the
+cursor/selection in view as you navigate.
+
 Building this phase requires a C compiler on your machine (CGO), since
 tree-sitter's grammars are C libraries — this was already noted as a
 tradeoff in the design doc's tech stack section, and matters even more

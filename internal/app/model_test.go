@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -399,5 +400,39 @@ func TestFoldingAGoFunctionThroughTheComposedApp(t *testing.T) {
 	}
 	if !strings.Contains(view, "var x = 1") {
 		t.Fatal("expected content after the fold to still render")
+	}
+}
+
+func TestLargeFileDoesNotPushTheTreePaneOutOfViewAndClipsToWindowHeight(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "biglist.txt")
+	lines := make([]string, 500)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line%d", i)
+	}
+	src := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(file, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	for i := 0; i < 400; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "biglist.txt") {
+		t.Fatal("expected the tree pane (showing biglist.txt) to remain visible alongside a large open file")
+	}
+	if got := strings.Count(view, "\n"); got > 24 {
+		t.Fatalf("got %d rendered lines, want at most the window height (24) — content must not overflow the terminal", got)
 	}
 }
