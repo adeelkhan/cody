@@ -769,11 +769,11 @@ func setupLargeFile(t *testing.T, numLines int) Model {
 func TestViewIsUnboundedWhenHeightIsNeverSet(t *testing.T) {
 	m := setupLargeFile(t, 20)
 	view := m.View()
-	// setupLargeFile's source ends with "\n", so strings.Split produces one
-	// extra trailing empty line (Buffer's existing, pre-existing behavior) —
-	// 20 content lines + 1 trailing empty line = 21 buffer lines total.
-	if got := strings.Count(view, "\n"); got != 21 {
-		t.Fatalf("got %d rendered lines, want all 21 (unbounded)", got)
+	// setupLargeFile's source ends with "\n", so the buffer has 21 lines
+	// (20 content + 1 trailing empty). View() trims the trailing newline, so
+	// strings.Count gives 20 newline separators = 21 lines.
+	if got := strings.Count(view, "\n"); got != 20 {
+		t.Fatalf("got %d newline separators, want 20 (all 21 buffer lines, no trailing newline)", got)
 	}
 }
 
@@ -782,8 +782,9 @@ func TestViewClipsRenderedLinesToTheSetHeight(t *testing.T) {
 	m = m.SetSize(80, 5)
 
 	view := m.View()
-	if got := strings.Count(view, "\n"); got != 5 {
-		t.Fatalf("got %d rendered lines, want 5", got)
+	// 5 lines rendered, no trailing newline → 4 newline separators.
+	if got := strings.Count(view, "\n"); got != 4 {
+		t.Fatalf("got %d newline separators, want 4 (5 lines, no trailing newline)", got)
 	}
 	if !strings.Contains(view, "line0") {
 		t.Fatal("expected the first line to be visible before any scrolling")
@@ -894,8 +895,9 @@ func TestPaddingALongLineDoesNotWrapItIntoMultiplePhysicalLines(t *testing.T) {
 	m = m.SetSize(40, 3)
 
 	view := m.View()
-	if got := strings.Count(view, "\n"); got != 3 {
-		t.Fatalf("got %d physical lines, want 3 — a row wider than the pane must not wrap", got)
+	// 3 lines rendered, no trailing newline → 2 newline separators.
+	if got := strings.Count(view, "\n"); got != 2 {
+		t.Fatalf("got %d newline separators, want 2 (3 lines, no trailing newline) — a row wider than the pane must not wrap", got)
 	}
 	if !strings.Contains(view, long) {
 		t.Fatal("expected the long line's full content to still be present, unwrapped")

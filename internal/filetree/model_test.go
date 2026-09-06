@@ -90,8 +90,9 @@ func setupModelWithNFiles(t *testing.T, n int) Model {
 func TestViewIsUnboundedWhenHeightIsNeverSet(t *testing.T) {
 	m := setupModelWithNFiles(t, 20)
 	view := m.View()
-	if got := strings.Count(view, "\n"); got != len(m.flat) {
-		t.Fatalf("got %d rendered lines, want %d (unbounded)", got, len(m.flat))
+	// N items rendered, no trailing newline → N-1 newline separators.
+	if got := strings.Count(view, "\n"); got != len(m.flat)-1 {
+		t.Fatalf("got %d newline separators, want %d (all items, no trailing newline)", got, len(m.flat)-1)
 	}
 }
 
@@ -99,8 +100,9 @@ func TestViewClipsRenderedLinesToTheSetHeight(t *testing.T) {
 	m := setupModelWithNFiles(t, 20)
 	m = m.SetSize(40, 5)
 	view := m.View()
-	if got := strings.Count(view, "\n"); got != 5 {
-		t.Fatalf("got %d rendered lines, want 5", got)
+	// 5 lines clipped, no trailing newline → 4 newline separators.
+	if got := strings.Count(view, "\n"); got != 4 {
+		t.Fatalf("got %d newline separators, want 4 (5 lines, no trailing newline)", got)
 	}
 }
 
@@ -196,8 +198,9 @@ func TestPaddingALongNameDoesNotWrapItIntoMultiplePhysicalLines(t *testing.T) {
 	m = m.SetSize(40, 3)
 
 	view := m.View()
-	if got := strings.Count(view, "\n"); got != 1 {
-		t.Fatalf("got %d physical lines, want 1 — a name wider than the pane must not wrap", got)
+	// 1 item rendered, no trailing newline → 0 newline separators.
+	if got := strings.Count(view, "\n"); got != 0 {
+		t.Fatalf("got %d newline separators, want 0 (1 line, no trailing newline) — a name wider than the pane must not wrap", got)
 	}
 	if !strings.Contains(view, longName) {
 		t.Fatal("expected the long name's full content to still be present, unwrapped")

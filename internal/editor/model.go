@@ -756,7 +756,7 @@ func (m Model) View() string {
 		b.WriteString(row)
 		b.WriteString("\n")
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // padRow right-pads row with spaces to reach the given visible (ANSI-aware)
