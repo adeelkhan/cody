@@ -38,9 +38,18 @@ var (
 	unfocusedBorderColor = lipgloss.Color("240")
 )
 
+// tab is one open file: its absolute path (the key used to detect an
+// already-open file and to avoid duplicate tabs) and its own independent
+// editor state (cursor, undo history, scroll position, folds, ...).
+type tab struct {
+	path   string
+	editor editor.Model
+}
+
 type Model struct {
 	tree          filetree.Model
-	editor        editor.Model
+	tabs          []tab
+	activeTab     int // -1 when no tabs are open
 	terminal      terminal.Model
 	focus         focusArea
 	projectName   string
@@ -68,13 +77,52 @@ func New(rootPath string, nerdFont bool) (Model, error) {
 	}
 	return Model{
 		tree:        tree,
-		editor:      editor.New(),
+		activeTab:   -1,
 		terminal:    terminal.New(),
 		focus:       focusTree,
 		projectName: filepath.Base(absPath),
 		rootPath:    absPath,
 		commands:    buildCommands(),
 	}, nil
+}
+
+// activeEditor returns the active tab's editor, or a zero-value
+// editor.Model (HasBuffer() == false, matching "no file open yet") when no
+// tabs are open.
+func (m Model) activeEditor() editor.Model {
+	if m.activeTab < 0 || m.activeTab >= len(m.tabs) {
+		return editor.Model{}
+	}
+	return m.tabs[m.activeTab].editor
+}
+
+// setActiveEditor writes e back into the active tab. A no-op when no tabs
+// are open (mirrors activeEditor's zero-value fallback).
+func (m Model) setActiveEditor(e editor.Model) Model {
+	if m.activeTab >= 0 && m.activeTab < len(m.tabs) {
+		m.tabs[m.activeTab].editor = e
+	}
+	return m
+}
+
+// openOrSwitch opens path in a new tab, or switches to its existing tab if
+// one is already open for that path — never creates a duplicate. On
+// failure to load a new file, m is returned unchanged (matching the
+// previous single-tab LoadFile-failure behavior) along with the error.
+func (m Model) openOrSwitch(path string) (Model, error) {
+	for i, t := range m.tabs {
+		if t.path == path {
+			m.activeTab = i
+			return m, nil
+		}
+	}
+	editorModel, err := editor.New().LoadFile(path)
+	if err != nil {
+		return m, err
+	}
+	m.tabs = append(m.tabs, tab{path: path, editor: editorModel})
+	m.activeTab = len(m.tabs) - 1
+	return m, nil
 }
 
 func (m Model) Init() tea.Cmd {
@@ -87,13 +135,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		paneHeight := m.height - menuBarHeight - statusBarHeight
 		editorHeight := paneHeight - terminalHeight
 		m.tree = m.tree.SetSize(treeWidth-borderSize, paneHeight-borderSize)
-		m.editor = m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
+		m = m.setActiveEditor(m.activeEditor().SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize))
 		m.terminal = m.terminal.SetSize(m.width-treeWidth-borderSize, terminalHeight-borderSize)
 		return m, nil
 	}
 	if _, ok := msg.(editor.RehighlightMsg); ok {
-		var cmd tea.Cmd
-		m.editor, cmd = m.editor.Update(msg)
+		e, cmd := m.activeEditor().Update(msg)
+		m = m.setActiveEditor(e)
 		return m, cmd
 	}
 	if _, ok := msg.(terminal.OutputMsg); ok {
@@ -157,12 +205,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case filetree.FileOpenedMsg:
-		editorModel, err := m.editor.LoadFile(msg.Path)
+		updated, err := m.openOrSwitch(msg.Path)
 		if err != nil {
 			m.recentCommand = fmt.Sprintf("Open failed: %s", err)
 			return m, nil
 		}
-		m.editor = editorModel
+		m = updated
 		m.focus = focusEditor
 		m.recentCommand = fmt.Sprintf("Opened %s", filepath.Base(msg.Path))
 		return m, nil
@@ -176,7 +224,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case focusTree:
 		m.tree, cmd = m.tree.Update(msg)
 	case focusEditor:
-		m.editor, cmd = m.editor.Update(msg)
+		e, c := m.activeEditor().Update(msg)
+		m = m.setActiveEditor(e)
+		cmd = c
 	case focusTerminal:
 		m.terminal, cmd = m.terminal.Update(msg)
 	}
@@ -272,8 +322,8 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 		m.focus = focusEditor
 		relX := x - editorRect.x0 - 1
 		relY := y - editorRect.y0 - 1
-		var cmd tea.Cmd
-		m.editor, cmd = m.editor.HandleClick(relX, relY)
+		e, cmd := m.activeEditor().HandleClick(relX, relY)
+		m = m.setActiveEditor(e)
 		return m, cmd
 	case terminalRect.contains(x, y):
 		m.focus = focusTerminal
@@ -296,7 +346,7 @@ func (m Model) handleWheel(x, y, delta int) (tea.Model, tea.Cmd) {
 	case treeRect.contains(x, y):
 		m.tree = m.tree.Scroll(delta)
 	case editorRect.contains(x, y):
-		m.editor = m.editor.ScrollLines(delta)
+		m = m.setActiveEditor(m.activeEditor().ScrollLines(delta))
 	}
 	return m, nil
 }
@@ -358,8 +408,8 @@ func (m Model) View() string {
 	}
 	menuBar := renderMenuBar(m.width, m.openMenu)
 	paneHeight := m.height - menuBarHeight - statusBarHeight
-	line, col := m.editor.Cursor()
-	status := statusbar.Render(m.width, m.projectName, m.recentCommand, m.editor.Filetype(), line, col)
+	line, col := m.activeEditor().Cursor()
+	status := statusbar.Render(m.width, m.projectName, m.recentCommand, m.activeEditor().Filetype(), line, col)
 
 	if m.activeDialog == dialogFileOpen {
 		dialog := renderFileOpenDialog(m.width, paneHeight, m.fileOpenInput, m.fileOpenError)
@@ -424,7 +474,7 @@ func (m Model) View() string {
 	// stale height would let a pane's content silently overflow its box,
 	// since Lip Gloss's Height() only sets a minimum, never a max.
 	tree := m.tree.SetSize(treeWidth-borderSize, bodyHeight-borderSize)
-	editor := m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
+	editor := m.activeEditor().SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
 	termWidth := m.width - treeWidth - borderSize
 	termHeight := terminalHeight - borderSize
 	term := m.terminal.SetSize(termWidth, termHeight)

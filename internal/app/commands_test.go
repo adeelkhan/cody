@@ -124,7 +124,7 @@ func TestEditorCommandsWorkRegardlessOfFocus(t *testing.T) {
 			}
 			mA := updatedA.(Model)
 			mB := updatedB.(Model)
-			if mA.editor.HasBuffer() != mB.editor.HasBuffer() {
+			if mA.activeEditor().HasBuffer() != mB.activeEditor().HasBuffer() {
 				t.Fatalf("%s: HasBuffer differs between focus states", shortcut)
 			}
 		})

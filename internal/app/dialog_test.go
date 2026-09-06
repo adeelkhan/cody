@@ -39,7 +39,7 @@ func TestFileOpenDialogEnterLoadsRelativePath(t *testing.T) {
 	if m.activeDialog != dialogNone {
 		t.Fatal("expected the dialog to close after a successful open")
 	}
-	if !m.editor.HasBuffer() {
+	if !m.activeEditor().HasBuffer() {
 		t.Fatal("expected the editor to have a loaded buffer")
 	}
 	if m.focus != focusEditor {
@@ -214,7 +214,7 @@ func TestTypingInSearchDialogJumpsToMatchAndEscClosesAndClears(t *testing.T) {
 	}
 	// Cursor still emits reverse-video; check for the search-specific yellow
 	// background (color 220) which disappears when the search is cleared.
-	if strings.Contains(m.editor.View(), "\x1b[48;5;220m") {
+	if strings.Contains(m.activeEditor().View(), "\x1b[48;5;220m") {
 		t.Fatal("expected Esc to clear the match highlight (yellow background)")
 	}
 }

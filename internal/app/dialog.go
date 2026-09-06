@@ -49,12 +49,12 @@ func (m Model) updateFileOpenDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !filepath.IsAbs(path) {
 			full = filepath.Join(m.rootPath, path)
 		}
-		editorModel, err := m.editor.LoadFile(full)
+		updated, err := m.openOrSwitch(full)
 		if err != nil {
 			m.fileOpenError = err.Error()
 			return m, nil
 		}
-		m.editor = editorModel
+		m = updated
 		m.activeDialog = dialogNone
 		m.focus = focusEditor
 		m.recentCommand = fmt.Sprintf("Opened %s", filepath.Base(full))
@@ -81,14 +81,14 @@ func renderFileOpenDialog(width, height int, ti textinput.Model, errMsg string) 
 }
 
 func cmdFind(m Model) (Model, tea.Cmd) {
-	if !m.editor.HasBuffer() {
+	if !m.activeEditor().HasBuffer() {
 		return m, func() tea.Msg { return editor.CommandExecutedMsg{Description: "No file open"} }
 	}
 	ti := textinput.New()
 	ti.Placeholder = "search"
 	ti.Focus()
 	m.searchInput = ti
-	m.editor = m.editor.StartSearch()
+	m = m.setActiveEditor(m.activeEditor().StartSearch())
 	m.activeDialog = dialogSearch
 	m.recentCommand = ""
 	return m, textinput.Blink
@@ -103,24 +103,24 @@ func (m Model) updateSearchDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch keyMsg.String() {
 	case "esc":
-		m.editor = m.editor.ClearSearch()
+		m = m.setActiveEditor(m.activeEditor().ClearSearch())
 		m.activeDialog = dialogNone
 		return m, nil
 	case "enter":
-		var status string
-		m.editor, status = m.editor.FindNext()
+		e, status := m.activeEditor().FindNext()
+		m = m.setActiveEditor(e)
 		m.recentCommand = status
 		return m, nil
 	case "shift+enter":
-		var status string
-		m.editor, status = m.editor.FindPrev()
+		e, status := m.activeEditor().FindPrev()
+		m = m.setActiveEditor(e)
 		m.recentCommand = status
 		return m, nil
 	}
 	var cmd tea.Cmd
 	m.searchInput, cmd = m.searchInput.Update(msg)
-	var status string
-	m.editor, status = m.editor.SetSearchQuery(m.searchInput.Value())
+	e, status := m.activeEditor().SetSearchQuery(m.searchInput.Value())
+	m = m.setActiveEditor(e)
 	m.recentCommand = status
 	return m, cmd
 }

@@ -33,44 +33,44 @@ func commandForShortcut(commands []Command, shortcut string) (Command, bool) {
 }
 
 func cmdSave(m Model) (Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	e, cmd := m.activeEditor().Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = m.setActiveEditor(e)
 	return m, cmd
 }
 
 func cmdCut(m Model) (Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	e, cmd := m.activeEditor().Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	m = m.setActiveEditor(e)
 	return m, cmd
 }
 
 func cmdCopy(m Model) (Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	e, cmd := m.activeEditor().Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = m.setActiveEditor(e)
 	return m, cmd
 }
 
 func cmdPaste(m Model) (Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	e, cmd := m.activeEditor().Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	m = m.setActiveEditor(e)
 	return m, cmd
 }
 
 func cmdUndo(m Model) (Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	e, cmd := m.activeEditor().Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	m = m.setActiveEditor(e)
 	return m, cmd
 }
 
 func cmdRedo(m Model) (Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	e, cmd := m.activeEditor().Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	m = m.setActiveEditor(e)
 	return m, cmd
 }
 
 func cmdToggleFold(m Model) (Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.editor, cmd = m.editor.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	e, cmd := m.activeEditor().Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	m = m.setActiveEditor(e)
 	return m, cmd
 }
 

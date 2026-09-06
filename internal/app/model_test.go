@@ -49,7 +49,7 @@ func TestFileOpenedMsgLoadsEditorAndSwitchesFocus(t *testing.T) {
 	if m.focus != focusEditor {
 		t.Fatal("expected focus to move to editor")
 	}
-	if !m.editor.HasBuffer() {
+	if !m.activeEditor().HasBuffer() {
 		t.Fatal("expected editor to have a loaded buffer")
 	}
 }
@@ -122,7 +122,7 @@ func TestFullFlowOpenTypeSaveUpdatesStatusBar(t *testing.T) {
 
 	updated, _ = m.Update(cmd())
 	m = updated.(Model)
-	if m.focus != focusEditor || !m.editor.HasBuffer() {
+	if m.focus != focusEditor || !m.activeEditor().HasBuffer() {
 		t.Fatal("expected file opened and focus moved to the editor")
 	}
 
@@ -180,7 +180,7 @@ func TestMouseClickFileOpenThenTypeThenLoadsFile(t *testing.T) {
 	if m.activeDialog != dialogNone {
 		t.Fatal("expected the dialog to close after a successful open")
 	}
-	if !m.editor.HasBuffer() {
+	if !m.activeEditor().HasBuffer() {
 		t.Fatal("expected the editor to have loaded target.go")
 	}
 	if m.focus != focusEditor {
@@ -350,7 +350,7 @@ func TestRehighlightMsgReachesEditorEvenWhenTreeIsFocused(t *testing.T) {
 	updated, _ = m.Update(msg)
 	m = updated.(Model)
 
-	view := m.editor.View()
+	view := m.activeEditor().View()
 	if strings.Contains(view, staleStyledText) {
 		t.Fatal("expected the rehighlight tick to reach the editor and reparse even though the tree was focused, but the stale (pre-edit) keyword span was still applied to the post-edit text")
 	}
@@ -371,7 +371,7 @@ func TestOpeningAGoFileHighlightsItInTheComposedApp(t *testing.T) {
 	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
 	m = updated.(Model)
 
-	if !m.editor.HasBuffer() {
+	if !m.activeEditor().HasBuffer() {
 		t.Fatal("expected the file to be loaded")
 	}
 	view := m.View()
@@ -449,7 +449,7 @@ func TestLargeFileDoesNotPushTheTreePaneOutOfViewAndClipsToWindowHeight(t *testi
 // Regression test: a file whose lines are wider than the editor pane must
 // not push the tree pane out of view. app/model.go composes each pane by
 // applying a Width()+Height() style to the pane's ALREADY-RENDERED
-// multi-line block (editorStyle.Render(m.editor.View())) — if any single
+// multi-line block (editorStyle.Render(m.activeEditor().View())) — if any single
 // line inside that block is wider than the style's target width, Lip Gloss
 // hard-wraps it into multiple physical lines, and since Height() only sets
 // a minimum (never truncates), those extra wrapped lines silently overflow
@@ -708,14 +708,14 @@ func TestSearchingAndCyclingMatchesThroughTheComposedApp(t *testing.T) {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		m = updated.(Model)
 	}
-	line, _ := m.editor.Cursor()
+	line, _ := m.activeEditor().Cursor()
 	if line != 3 {
 		t.Fatalf("got cursor line=%d, want 3 (the first \"add\" match, in \"func add(\")", line)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
-	line, _ = m.editor.Cursor()
+	line, _ = m.activeEditor().Cursor()
 	if line != 7 {
 		t.Fatalf("got cursor line=%d, want 7 (the second \"add\" match, in \"func addTwo(\")", line)
 	}
@@ -789,7 +789,7 @@ func TestClickInEditorPanePositionsCursor(t *testing.T) {
 	if m.focus != focusEditor {
 		t.Fatal("expected clicking the editor pane to focus it")
 	}
-	line, col := m.editor.Cursor()
+	line, col := m.activeEditor().Cursor()
 	if line != 3 || col != 6 {
 		t.Fatalf("got line=%d col=%d, want 3,6 (line2, zero-indexed col 5)", line, col)
 	}
@@ -848,5 +848,76 @@ func TestWheelOverTreeScrollsWithoutChangingFocus(t *testing.T) {
 	after := m.tree.View()
 	if strings.Contains(after, "00.go") {
 		t.Fatal("expected 00.go to have scrolled out of view")
+	}
+}
+
+func TestOpeningTwoDifferentFilesCreatesTwoTabs(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+
+	if len(m.tabs) != 2 {
+		t.Fatalf("got %d tabs, want 2", len(m.tabs))
+	}
+	if m.activeTab != 1 {
+		t.Fatalf("got activeTab=%d, want 1 (the most recently opened)", m.activeTab)
+	}
+}
+
+func TestOpeningAnAlreadyOpenFileSwitchesInsteadOfDuplicating(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	// Move the cursor in fileB's tab so we can confirm re-opening fileA and
+	// coming back to fileB preserves this, rather than reloading it.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	lineBeforeReopen, _ := m.activeEditor().Cursor()
+
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	if len(m.tabs) != 2 {
+		t.Fatalf("got %d tabs, want 2 (re-opening fileA must not duplicate it)", len(m.tabs))
+	}
+	if m.activeTab != 0 {
+		t.Fatalf("got activeTab=%d, want 0 (fileA's existing tab)", m.activeTab)
+	}
+
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	if m.activeTab != 1 {
+		t.Fatalf("got activeTab=%d, want 1 (back to fileB's existing tab)", m.activeTab)
+	}
+	lineAfterReturn, _ := m.activeEditor().Cursor()
+	if lineAfterReturn != lineBeforeReopen {
+		t.Fatalf("got cursor line=%d, want %d — switching back to an already-open tab must preserve its state, not reload it", lineAfterReturn, lineBeforeReopen)
 	}
 }
