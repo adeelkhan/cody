@@ -40,10 +40,17 @@ terminal, a menu bar, and a status bar.
   trees rather than a single `sitter.Tree` like the other languages; this is
   absorbed inside Markdown's own highlighter implementation, not exposed to
   the rest of the system.
-- **Embedded terminal**: [`github.com/creack/pty`](https://github.com/creack/pty)
-  to spawn a real shell in a pseudo-terminal, with a VT100/ANSI emulation
-  library (e.g. [`hinshun/vt10x`](https://github.com/hinshun/vt10x)) to
-  interpret the PTY's output stream into a virtual screen grid for rendering.
+- **Embedded terminal**: [`github.com/charmbracelet/x/xpty`](https://github.com/charmbracelet/x)
+  to spawn a real shell in a pseudo-terminal (cross-platform: a real Unix PTY,
+  ConPTY on Windows), paired with
+  [`github.com/charmbracelet/x/vt`](https://github.com/charmbracelet/x)'s
+  `Emulator` to interpret the PTY's output stream into a virtual screen grid
+  and render it back out as an ANSI-styled string each frame. Chosen over the
+  originally-considered `creack/pty` + `hinshun/vt10x` pairing because both
+  packages are from the same vendor as Bubble Tea/Lip Gloss (parts of
+  `charmbracelet/x` — e.g. `x/ansi` — are already transitive dependencies of
+  this project via those libraries), which lowers integration risk and keeps
+  the dependency tree coherent.
 - **Build**: CGO is required (for tree-sitter). This constrains cross-compilation
   (a C toolchain must be available for the target) but is accepted as a
   tradeoff for using the mainline tree-sitter grammars.
@@ -169,14 +176,38 @@ entry) is one registration, not three.
 
 ## 7. Terminal pane
 
-- `$SHELL` is spawned via `creack/pty` on first focus (or at startup),
-  attached to a pseudo-terminal sized to match the pane's dimensions.
-- Output is run through a VT100/ANSI emulator maintaining a virtual screen
-  grid, rendered each frame via Lip Gloss.
+- A new `internal/terminal` package mirrors the existing `editor`/`filetree`
+  package shape: a `Model` with `Update`/`View`/`SetSize`, composed into
+  `app.Model` the same way the other two panes are.
+- `$SHELL` is spawned **lazily, on first focus** (not at startup) via
+  `xpty.NewPty(cols, rows)` + `pty.Start(exec.Command($SHELL))` — avoids
+  wasting a shell process for a session that never touches the terminal
+  pane.
+- A background goroutine blocks reading the PTY and feeds each chunk of
+  bytes back into the Bubble Tea event loop as a `tea.Cmd`/message (the
+  standard pattern for attaching an external I/O source to Bubble Tea's
+  event loop), which `Update` writes into a `vt.NewEmulator(cols, rows)`.
+  `View()` calls `Emulator.Render()` each frame for the pane's content —
+  since the emulator always maintains an exact `cols`×`rows` grid, this
+  pane's rendered output can never contain a line wider than its pane
+  (unlike the editor/tree panes, which needed explicit truncation to avoid
+  the Lip Gloss hard-wrap-on-overflow behavior found during Phase 4b).
 - When the pane is focused, raw keypresses (other than the app's own global
-  shortcuts) are forwarded directly to the PTY's stdin — full interactivity
-  (vim, htop, ssh, Ctrl-C, etc. all work as in a real terminal).
-- The PTY is resized whenever the pane's on-screen size changes.
+  shortcuts, intercepted the same way focus-dispatch already works for the
+  tree/editor panes) are encoded to the byte sequence a real terminal would
+  emit and written to the PTY's stdin — full interactivity (vim, htop, ssh,
+  Ctrl-C, etc. all work as in a real terminal). The encoding table (arrows,
+  Home/End, PageUp/Down, Ctrl+letter, function keys, etc.) is small,
+  well-known, and stable regardless of library choice; its exact
+  implementation is confirmed via a research spike before the plan is
+  written, matching this project's established practice of empirically
+  verifying third-party API behavior rather than assuming it.
+- The PTY and the emulator are both resized whenever the pane's on-screen
+  size changes (window resize, or a layout shift like a menu dropdown
+  opening/closing).
+- Quitting the app (`Ctrl+Q`) or otherwise exiting must cleanly terminate
+  the spawned shell process — orphaned/zombie shell processes are treated
+  as a correctness bug, not a cosmetic one.
 
 ## 8. Menu bar, keybindings, command palette
 
@@ -232,6 +263,10 @@ entry) is one registration, not three.
   handler, palette filter/execute).
 - Terminal PTY rendering and full-TUI layout are verified manually per phase
   — raw terminal rendering doesn't lend itself to meaningful unit tests.
+  This applies only to the "spawn a real shell, observe real output" path,
+  though: the terminal pane's key-encoding table, resize-forwarding, and
+  focus-dispatch routing are pure/fakeable logic and get real unit tests
+  behind a small `Pty`/`Emulator`-shaped interface seam.
 
 ## 12. Phased build order
 
