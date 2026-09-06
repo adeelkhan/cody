@@ -3,9 +3,12 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"cody/internal/filetree"
 )
 
 func TestCmdOpenFilePromptActivatesDialog(t *testing.T) {
@@ -136,5 +139,80 @@ func TestUpdateRoutesToAboutDialogWhenActive(t *testing.T) {
 	m = updated.(Model)
 	if m.activeDialog != dialogNone {
 		t.Fatal("expected the root Update to route to updateAboutDialog and close it")
+	}
+}
+
+func TestCtrlFOpensSearchDialogOnlyWithABufferOpen(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	m = updated.(Model)
+	if m.activeDialog != dialogNone {
+		t.Fatalf("got activeDialog=%v, want dialogNone (no file open)", m.activeDialog)
+	}
+	if cmd == nil {
+		t.Fatal("expected a CommandExecutedMsg command reporting no file open")
+	}
+}
+
+func TestCtrlFOpensSearchDialogWithABufferOpen(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(file, []byte("hello world\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	m = updated.(Model)
+	if m.activeDialog != dialogSearch {
+		t.Fatalf("got activeDialog=%v, want dialogSearch", m.activeDialog)
+	}
+}
+
+func TestTypingInSearchDialogJumpsToMatchAndEscClosesAndClears(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(file, []byte("foo\nbar\nfoo\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	m = updated.(Model)
+
+	for _, r := range "foo" {
+		updated, _ = m.updateSearchDialog(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	if m.recentCommand != "Match 1 of 2" {
+		t.Fatalf("got recentCommand=%q, want %q", m.recentCommand, "Match 1 of 2")
+	}
+
+	updated, _ = m.updateSearchDialog(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.recentCommand != "Match 2 of 2" {
+		t.Fatalf("got recentCommand=%q, want %q after Enter", m.recentCommand, "Match 2 of 2")
+	}
+
+	updated, _ = m.updateSearchDialog(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.activeDialog != dialogNone {
+		t.Fatalf("got activeDialog=%v, want dialogNone after Esc", m.activeDialog)
+	}
+	if strings.Contains(m.editor.View(), "\x1b[7m") {
+		t.Fatal("expected Esc to clear the match highlight")
 	}
 }

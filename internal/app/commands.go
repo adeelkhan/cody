@@ -11,6 +11,7 @@ type Command struct {
 func buildCommands() []Command {
 	return []Command{
 		{Name: "Open", Shortcut: "ctrl+o", Handler: cmdOpenFilePrompt},
+		{Name: "Find", Shortcut: "ctrl+f", Handler: cmdFind},
 		{Name: "Save", Shortcut: "ctrl+s", Handler: cmdSave},
 		{Name: "Cut", Shortcut: "ctrl+x", Handler: cmdCut},
 		{Name: "Copy", Shortcut: "ctrl+c", Handler: cmdCopy},

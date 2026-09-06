@@ -7,6 +7,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"cody/internal/editor"
 )
 
 type dialogKind int
@@ -16,6 +18,7 @@ const (
 	dialogFileOpen
 	dialogAbout
 	dialogPalette
+	dialogSearch
 )
 
 func cmdOpenFilePrompt(m Model) (Model, tea.Cmd) {
@@ -73,6 +76,59 @@ func renderFileOpenDialog(width, height int, ti textinput.Model, errMsg string) 
 	content := "Open file:\n\n" + ti.View()
 	if errMsg != "" {
 		content += "\n\nError: " + errMsg
+	}
+	return lipgloss.NewStyle().Width(width).Height(height).Padding(1, 2).Render(content)
+}
+
+func cmdFind(m Model) (Model, tea.Cmd) {
+	if !m.editor.HasBuffer() {
+		return m, func() tea.Msg { return editor.CommandExecutedMsg{Description: "No file open"} }
+	}
+	ti := textinput.New()
+	ti.Placeholder = "search"
+	ti.Focus()
+	m.searchInput = ti
+	m.editor = m.editor.StartSearch()
+	m.activeDialog = dialogSearch
+	m.recentCommand = ""
+	return m, textinput.Blink
+}
+
+func (m Model) updateSearchDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		var cmd tea.Cmd
+		m.searchInput, cmd = m.searchInput.Update(msg)
+		return m, cmd
+	}
+	switch keyMsg.String() {
+	case "esc":
+		m.editor = m.editor.ClearSearch()
+		m.activeDialog = dialogNone
+		return m, nil
+	case "enter":
+		var status string
+		m.editor, status = m.editor.FindNext()
+		m.recentCommand = status
+		return m, nil
+	case "shift+enter":
+		var status string
+		m.editor, status = m.editor.FindPrev()
+		m.recentCommand = status
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.searchInput, cmd = m.searchInput.Update(msg)
+	var status string
+	m.editor, status = m.editor.SetSearchQuery(m.searchInput.Value())
+	m.recentCommand = status
+	return m, cmd
+}
+
+func renderSearchDialog(width, height int, ti textinput.Model, status string) string {
+	content := "Find:\n\n" + ti.View()
+	if status != "" {
+		content += "\n\n" + status
 	}
 	return lipgloss.NewStyle().Width(width).Height(height).Padding(1, 2).Render(content)
 }
