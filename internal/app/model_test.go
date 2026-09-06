@@ -624,6 +624,7 @@ func TestTerminalPaneShowsRealShellOutputThroughTheComposedApp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = m.terminal.Close() })
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // tree -> editor

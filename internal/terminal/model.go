@@ -1,11 +1,13 @@
 package terminal
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/xpty"
 )
 
 // OutputMsg carries a chunk of bytes read from the pty. Exported so
@@ -85,10 +87,16 @@ func (m Model) Start() (Model, tea.Cmd) {
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	if err := p.Start(exec.Command(shell)); err != nil {
+	cmd := exec.Command(shell)
+	setControllingTerminal(cmd)
+	if err := p.Start(cmd); err != nil {
 		m.err = fmt.Errorf("terminal: %w", err)
 		return m, nil
 	}
+	// Reap the child once it exits so it doesn't linger as a zombie for
+	// the remaining life of the app. Fire-and-forget: the model doesn't
+	// need to know when this completes.
+	go func() { _ = xpty.WaitProcess(context.Background(), cmd) }()
 
 	m.pty = p
 	m.emu = newEmulator(w, h)

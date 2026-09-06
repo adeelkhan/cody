@@ -61,6 +61,7 @@ func TestRealShellSpawnAndOutputRoundTrip(t *testing.T) {
 	m := New()
 	m = m.SetSize(40, 10)
 	m, cmd := m.Start()
+	t.Cleanup(func() { _ = m.Close() })
 	if cmd == nil {
 		t.Fatal("expected a read command from Start")
 	}

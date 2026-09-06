@@ -12,9 +12,9 @@ This phase adds a third focus-cyclable pane that runs a real shell (`$SHELL`,
 spawned via `charmbracelet/x/xpty` and rendered using `charmbracelet/x/vt`)
 in a pseudo-terminal. The terminal pane spawns on first focus and persists
 until quit. Typing a command sends keystrokes through the real pty, and the
-shell's output is rendered directly in the pane. Terminal scrolling, resize
-support (propagated to the shell via `SIGWINCH`), and real keystroke handling
-are all included.
+shell's output is rendered directly in the pane. The pty and emulator are
+resized with the pane and the shell is notified via `SIGWINCH`. There is no
+scrollback — the pane shows the emulator's current screen grid only.
 
 Previous phases added: phase 4b (code folding for function/block bodies and
 Markdown sections/code blocks — `Ctrl+K` toggles), phase 4 (independent
@@ -71,3 +71,6 @@ go build -o cody ./cmd/cody
   the box.
 - Abrupt termination (closing the terminal window, `kill -9`) may leave the
   spawned shell running orphaned — `Ctrl+Q` cleanly kills it.
+- `Tab`/`Shift+Tab` are reserved globally for cycling pane focus, so a literal
+  Tab keypress never reaches the shell — no tab-completion in the terminal
+  pane.
