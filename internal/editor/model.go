@@ -55,6 +55,8 @@ type Model struct {
 	folds               []highlight.LineRange
 	foldedStartLines    map[int]bool
 	scrollOffset        int
+	searchMatches       []searchMatch
+	searchIndex         int
 }
 
 type undoSnapshot struct {
@@ -63,8 +65,41 @@ type undoSnapshot struct {
 	cursorCol  int
 }
 
+type searchMatch struct {
+	line     int
+	startCol int
+	endCol   int
+}
+
+// findMatches returns every case-insensitive occurrence of query across
+// lines, in line/column order. Columns are rune offsets, matching this
+// package's existing convention (see highlightSelection).
+func findMatches(lines []string, query string) []searchMatch {
+	if query == "" {
+		return nil
+	}
+	q := []rune(strings.ToLower(query))
+	var matches []searchMatch
+	for lineIdx, line := range lines {
+		l := []rune(strings.ToLower(line))
+		for start := 0; start+len(q) <= len(l); start++ {
+			found := true
+			for i, r := range q {
+				if l[start+i] != r {
+					found = false
+					break
+				}
+			}
+			if found {
+				matches = append(matches, searchMatch{line: lineIdx, startCol: start, endCol: start + len(q)})
+			}
+		}
+	}
+	return matches
+}
+
 func New() Model {
-	return Model{}
+	return Model{searchIndex: -1}
 }
 
 func (m Model) LoadFile(path string) (Model, error) {
@@ -86,6 +121,8 @@ func (m Model) LoadFile(path string) (Model, error) {
 	m.folds = nil
 	m.foldedStartLines = nil
 	m.scrollOffset = 0
+	m.searchMatches = nil
+	m.searchIndex = -1
 	if lang, ok := highlight.LanguageForPath(path); ok {
 		if h, err := highlight.New(lang); err == nil {
 			m.highlighter = h
@@ -207,6 +244,8 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		m.highlightGeneration++
 		m.foldedStartLines = nil
 		m.folds = nil
+		m.searchMatches = nil
+		m.searchIndex = -1
 		cmd = scheduleRehighlight(m.highlightGeneration)
 	case "backspace":
 		m.selecting = false
@@ -215,6 +254,8 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		m.highlightGeneration++
 		m.foldedStartLines = nil
 		m.folds = nil
+		m.searchMatches = nil
+		m.searchIndex = -1
 		cmd = scheduleRehighlight(m.highlightGeneration)
 	case "ctrl+s":
 		desc := m.save()
@@ -227,12 +268,16 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		m.highlightGeneration++
 		m.foldedStartLines = nil
 		m.folds = nil
+		m.searchMatches = nil
+		m.searchIndex = -1
 		cmd = scheduleRehighlight(m.highlightGeneration)
 	case "ctrl+x":
 		desc := m.Cut()
 		m.highlightGeneration++
 		m.rehighlight()
 		m.refold()
+		m.searchMatches = nil
+		m.searchIndex = -1
 		cmd = func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+c":
 		desc := m.Copy()
@@ -242,18 +287,24 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		m.highlightGeneration++
 		m.rehighlight()
 		m.refold()
+		m.searchMatches = nil
+		m.searchIndex = -1
 		cmd = func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+z":
 		desc := m.undo()
 		m.highlightGeneration++
 		m.rehighlight()
 		m.refold()
+		m.searchMatches = nil
+		m.searchIndex = -1
 		cmd = func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+y":
 		desc := m.redo()
 		m.highlightGeneration++
 		m.rehighlight()
 		m.refold()
+		m.searchMatches = nil
+		m.searchIndex = -1
 		cmd = func() tea.Msg { return CommandExecutedMsg{Description: desc} }
 	case "ctrl+k":
 		desc := m.toggleFold()
@@ -266,6 +317,8 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 			m.highlightGeneration++
 			m.foldedStartLines = nil
 			m.folds = nil
+			m.searchMatches = nil
+			m.searchIndex = -1
 			cmd = scheduleRehighlight(m.highlightGeneration)
 		}
 	}
@@ -359,6 +412,99 @@ func (m *Model) toggleFold() string {
 		return "Folded"
 	}
 	return "Unfolded"
+}
+
+// StartSearch enters search mode: clears any previous match state so a
+// fresh query starts from empty.
+func (m Model) StartSearch() Model {
+	m.searchMatches = nil
+	m.searchIndex = -1
+	return m
+}
+
+// SetSearchQuery recomputes matches for query and jumps to the nearest
+// one at or after the current cursor position (wrapping to the first
+// match if none qualify). Returns a short status string.
+func (m Model) SetSearchQuery(query string) (Model, string) {
+	if m.buf == nil {
+		return m, "No file open"
+	}
+	m.searchMatches = findMatches(m.buf.Lines, query)
+	if len(m.searchMatches) == 0 {
+		m.searchIndex = -1
+		if query == "" {
+			return m, ""
+		}
+		return m, "No matches"
+	}
+	m.searchIndex = m.nearestMatchIndex()
+	m.jumpToCurrentMatch()
+	return m, m.matchStatus()
+}
+
+// FindNext moves to the next match, wrapping to the first.
+func (m Model) FindNext() (Model, string) {
+	if len(m.searchMatches) == 0 {
+		return m, "No matches"
+	}
+	m.searchIndex = (m.searchIndex + 1) % len(m.searchMatches)
+	m.jumpToCurrentMatch()
+	return m, m.matchStatus()
+}
+
+// FindPrev moves to the previous match, wrapping to the last.
+func (m Model) FindPrev() (Model, string) {
+	if len(m.searchMatches) == 0 {
+		return m, "No matches"
+	}
+	m.searchIndex = (m.searchIndex - 1 + len(m.searchMatches)) % len(m.searchMatches)
+	m.jumpToCurrentMatch()
+	return m, m.matchStatus()
+}
+
+// ClearSearch exits search mode: all match state and highlighting is
+// removed. The cursor is left wherever the last jump put it.
+func (m Model) ClearSearch() Model {
+	m.searchMatches = nil
+	m.searchIndex = -1
+	return m
+}
+
+func (m Model) nearestMatchIndex() int {
+	for i, match := range m.searchMatches {
+		if match.line > m.cursorLine || (match.line == m.cursorLine && match.startCol >= m.cursorCol) {
+			return i
+		}
+	}
+	return 0
+}
+
+func (m *Model) jumpToCurrentMatch() {
+	if m.searchIndex < 0 || m.searchIndex >= len(m.searchMatches) {
+		return
+	}
+	match := m.searchMatches[m.searchIndex]
+	m.cursorLine = match.line
+	m.cursorCol = match.startCol
+	m.ensureCursorVisible()
+}
+
+func (m Model) matchStatus() string {
+	if len(m.searchMatches) == 0 {
+		return "No matches"
+	}
+	return fmt.Sprintf("Match %d of %d", m.searchIndex+1, len(m.searchMatches))
+}
+
+func (m Model) currentMatchOnLine(line int) (searchMatch, bool) {
+	if m.searchIndex < 0 || m.searchIndex >= len(m.searchMatches) {
+		return searchMatch{}, false
+	}
+	match := m.searchMatches[m.searchIndex]
+	if match.line != line {
+		return searchMatch{}, false
+	}
+	return match, true
 }
 
 func (m *Model) moveUp() {
@@ -574,6 +720,8 @@ func (m Model) View() string {
 		rendered := line
 		if hasSel && i >= startLine && i <= endLine {
 			rendered = highlightSelection(line, i, startLine, startCol, endLine, endCol)
+		} else if match, ok := m.currentMatchOnLine(i); ok {
+			rendered = highlightMatch(line, match.startCol, match.endCol)
 		} else if spans, ok := m.highlightSpans[i]; ok {
 			rendered = renderHighlightedLine(line, spans)
 		}
@@ -636,6 +784,29 @@ func renderHighlightedLine(line string, spans []highlight.LineSpan) string {
 	}
 	b.WriteString(string(runes[pos:]))
 	return b.String()
+}
+
+func highlightMatch(line string, startCol, endCol int) string {
+	runes := []rune(line)
+	if startCol > len(runes) {
+		startCol = len(runes)
+	}
+	if endCol > len(runes) {
+		endCol = len(runes)
+	}
+	if startCol >= endCol {
+		return line
+	}
+	// Reverse and Background are applied via two nested Render calls rather
+	// than chained on one Style. Lipgloss merges attributes on a single
+	// Style into one combined SGR sequence (e.g. "\x1b[7;48;5;220m"), which
+	// would not contain a standalone "\x1b[7m" — the exact escape sequence
+	// this package's tests (and highlightSelection) check for to detect
+	// reverse video. Nesting keeps the visual result (reverse video over a
+	// tinted background) while emitting "\x1b[7m" as its own prefix.
+	reverse := lipgloss.NewStyle().Reverse(true).TabWidth(lipgloss.NoTabConversion)
+	background := lipgloss.NewStyle().Background(lipgloss.Color("220"))
+	return string(runes[:startCol]) + reverse.Render(background.Render(string(runes[startCol:endCol]))) + string(runes[endCol:])
 }
 
 func highlightSelection(line string, lineIdx, startLine, startCol, endLine, endCol int) string {

@@ -899,3 +899,142 @@ func TestPaddingALongLineDoesNotWrapItIntoMultiplePhysicalLines(t *testing.T) {
 		t.Fatal("expected the long line's full content to still be present, unwrapped")
 	}
 }
+
+func TestSetSearchQueryFindsAllCaseInsensitiveMatchesAndJumpsToNearest(t *testing.T) {
+	m := setupEditor(t, "foo\nBAR foo\nfoo bar\n")
+	m = m.StartSearch()
+	m, status := m.SetSearchQuery("foo")
+	if status != "Match 1 of 3" {
+		t.Fatalf("got status %q, want %q", status, "Match 1 of 3")
+	}
+	line, col := m.Cursor()
+	if line != 1 || col != 1 {
+		t.Fatalf("got cursor line=%d col=%d, want 1,1 (first match)", line, col)
+	}
+}
+
+func TestSetSearchQueryJumpsToNearestMatchAtOrAfterCursorNotAlwaysTheFirst(t *testing.T) {
+	m := setupEditor(t, "foo\nfoo\nfoo\n")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor now on line 2 (0-indexed)
+	m = m.StartSearch()
+	m, status := m.SetSearchQuery("foo")
+	if status != "Match 3 of 3" {
+		t.Fatalf("got status %q, want %q (the match on the cursor's own line)", status, "Match 3 of 3")
+	}
+	line, _ := m.Cursor()
+	if line != 3 {
+		t.Fatalf("got cursor line=%d, want 3 (1-indexed line 3 == 0-indexed line 2)", line)
+	}
+}
+
+func TestSetSearchQueryWithNoMatchesReportsNoMatches(t *testing.T) {
+	m := setupEditor(t, "hello world\n")
+	m = m.StartSearch()
+	m, status := m.SetSearchQuery("xyz")
+	if status != "No matches" {
+		t.Fatalf("got status %q, want %q", status, "No matches")
+	}
+}
+
+func TestSetSearchQueryWithEmptyQueryReportsEmptyStatus(t *testing.T) {
+	m := setupEditor(t, "hello world\n")
+	m = m.StartSearch()
+	m, status := m.SetSearchQuery("")
+	if status != "" {
+		t.Fatalf("got status %q, want empty", status)
+	}
+}
+
+func TestFindNextAndFindPrevCycleThroughMatchesAndWrap(t *testing.T) {
+	m := setupEditor(t, "foo\nfoo\nfoo\n")
+	m = m.StartSearch()
+	m, _ = m.SetSearchQuery("foo")
+
+	m, status := m.FindNext()
+	if status != "Match 2 of 3" {
+		t.Fatalf("got status %q, want %q", status, "Match 2 of 3")
+	}
+	m, status = m.FindNext()
+	if status != "Match 3 of 3" {
+		t.Fatalf("got status %q, want %q", status, "Match 3 of 3")
+	}
+	m, status = m.FindNext()
+	if status != "Match 1 of 3" {
+		t.Fatalf("got status %q, want %q (wraps forward)", status, "Match 1 of 3")
+	}
+	m, status = m.FindPrev()
+	if status != "Match 3 of 3" {
+		t.Fatalf("got status %q, want %q (wraps backward)", status, "Match 3 of 3")
+	}
+}
+
+func TestClearSearchRemovesAllMatchState(t *testing.T) {
+	// Force a real color profile — the default test profile is Ascii,
+	// which never emits ANSI codes at all, so checking their absence
+	// would pass trivially regardless of whether ClearSearch did anything.
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	m := setupEditor(t, "foo\n")
+	m = m.StartSearch()
+	m, _ = m.SetSearchQuery("foo")
+	if !strings.Contains(m.View(), "\x1b[7m") {
+		t.Fatal("setup failed: expected a reverse-video match highlight before clearing")
+	}
+
+	m = m.ClearSearch()
+
+	if strings.Contains(m.View(), "\x1b[7m") {
+		t.Fatal("expected no reverse-video match highlight after ClearSearch")
+	}
+	if _, status := m.FindNext(); status != "No matches" {
+		t.Fatalf("got status %q, want %q after clearing", status, "No matches")
+	}
+}
+
+func TestCurrentMatchIsHighlightedInView(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	m := setupEditor(t, "hello world\n")
+	m = m.StartSearch()
+	m, _ = m.SetSearchQuery("world")
+
+	view := m.View()
+	if !strings.Contains(view, "\x1b[7m") {
+		t.Fatalf("expected a reverse-video escape code highlighting the match, got %q", view)
+	}
+}
+
+func TestTypingClearsSearchState(t *testing.T) {
+	m := setupEditor(t, "foo\n")
+	m = m.StartSearch()
+	m, _ = m.SetSearchQuery("foo")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+
+	if _, status := m.FindNext(); status != "No matches" {
+		t.Fatalf("got status %q, want %q — typing must clear search state", status, "No matches")
+	}
+}
+
+func TestLoadFileResetsSearchState(t *testing.T) {
+	m := setupEditor(t, "foo\n")
+	m = m.StartSearch()
+	m, _ = m.SetSearchQuery("foo")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "other.go")
+	if err := os.WriteFile(path, []byte("bar\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, status := m.FindNext(); status != "No matches" {
+		t.Fatalf("got status %q, want %q after LoadFile", status, "No matches")
+	}
+}
