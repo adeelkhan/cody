@@ -19,6 +19,7 @@ const (
 	dialogAbout
 	dialogPalette
 	dialogSearch
+	dialogConfirmDiscard
 )
 
 func cmdOpenFilePrompt(m Model) (Model, tea.Cmd) {

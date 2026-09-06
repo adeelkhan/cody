@@ -64,6 +64,10 @@ type Model struct {
 	paletteFilter textinput.Model
 	paletteCursor int
 	searchInput   textinput.Model
+
+	pendingConfirm    confirmAction
+	pendingConfirmTab int // meaningful only when pendingConfirm == confirmCloseTab
+	confirmCursor     int // 0 = "anyway", 1 = "Cancel"
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -165,6 +169,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.activeDialog == dialogSearch {
 		return m.updateSearchDialog(msg)
+	}
+	if m.activeDialog == dialogConfirmDiscard {
+		return m.updateConfirmDialog(msg)
 	}
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
@@ -426,6 +433,10 @@ func (m Model) View() string {
 	}
 	if m.activeDialog == dialogSearch {
 		dialog := renderSearchDialog(m.width, paneHeight, m.searchInput, m.recentCommand)
+		return lipgloss.JoinVertical(lipgloss.Left, menuBar, dialog, status)
+	}
+	if m.activeDialog == dialogConfirmDiscard {
+		dialog := renderConfirmDialog(m.width, paneHeight, m)
 		return lipgloss.JoinVertical(lipgloss.Left, menuBar, dialog, status)
 	}
 

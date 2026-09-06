@@ -75,6 +75,18 @@ func cmdToggleFold(m Model) (Model, tea.Cmd) {
 }
 
 func cmdQuit(m Model) (Model, tea.Cmd) {
-	m.terminal.Close()
-	return m, tea.Quit
+	var dirty []string
+	for _, t := range m.tabs {
+		if t.editor.HasUnsavedChanges() {
+			dirty = append(dirty, t.path)
+		}
+	}
+	if len(dirty) == 0 {
+		m.terminal.Close()
+		return m, tea.Quit
+	}
+	m.activeDialog = dialogConfirmDiscard
+	m.pendingConfirm = confirmQuit
+	m.confirmCursor = 0
+	return m, nil
 }
