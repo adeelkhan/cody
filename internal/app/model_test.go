@@ -65,7 +65,10 @@ func TestCtrlSWorksRegardlessOfFocus(t *testing.T) {
 	updated, _ := m.Update(filetree.FileOpenedMsg{Path: file})
 	m = updated.(Model)
 	// Focus is now on the editor after opening; switch back to the tree.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	// Shift+Tab (not Tab) goes editor -> tree in the three-way focus cycle
+	// (Tree -> Editor -> Terminal -> Tree forward, so backward from Editor
+	// lands on Tree).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 	m = updated.(Model)
 	if m.focus != focusTree {
 		t.Fatal("expected focus back on tree")
@@ -327,7 +330,10 @@ func TestRehighlightMsgReachesEditorEvenWhenTreeIsFocused(t *testing.T) {
 
 	// Switch focus to the tree before the debounce tick would normally
 	// fire — this is exactly the scenario the bug report describes.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	// Shift+Tab (not Tab) goes editor -> tree in the three-way focus cycle
+	// (Tree -> Editor -> Terminal -> Tree forward, so backward from Editor
+	// lands on Tree).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 	m = updated.(Model)
 	if m.focus != focusTree {
 		t.Fatal("setup failed: expected focus on the tree")
@@ -492,5 +498,117 @@ func TestClampBlockWidthIsANoOpForNonPositiveWidth(t *testing.T) {
 	block := "anything\nhere"
 	if got := clampBlockWidth(block, 0); got != block {
 		t.Fatalf("got %q, want unchanged %q", got, block)
+	}
+}
+
+func TestTabCyclesThroughAllThreePanesForwardAndBack(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.focus != focusTree {
+		t.Fatalf("got initial focus %v, want focusTree", m.focus)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.focus != focusEditor {
+		t.Fatalf("got focus %v after one Tab, want focusEditor", m.focus)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.focus != focusTerminal {
+		t.Fatalf("got focus %v after two Tabs, want focusTerminal", m.focus)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.focus != focusTree {
+		t.Fatalf("got focus %v after three Tabs, want focusTree (wrapped)", m.focus)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = updated.(Model)
+	if m.focus != focusTerminal {
+		t.Fatalf("got focus %v after one Shift+Tab, want focusTerminal (wrapped backward)", m.focus)
+	}
+}
+
+func TestFocusingTheTerminalStartsItExactlyOnce(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> editor
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> terminal
+	m = updated.(Model)
+	if !m.terminal.Started() {
+		t.Fatal("expected focusing the terminal pane to start it")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command (the pty read loop kickoff) when the terminal starts")
+	}
+
+	// Tabbing away and back must not restart it.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> tree
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> editor
+	m = updated.(Model)
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> terminal again
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected no new start command the second time the terminal gains focus")
+	}
+}
+
+func TestEditingShortcutsPassThroughToTheTerminalWhenItHasFocus(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(file, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // editor -> terminal
+	m = updated.(Model)
+	if m.focus != focusTerminal {
+		t.Fatalf("got focus %v, want focusTerminal", m.focus)
+	}
+
+	before := m.recentCommand
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+	if m.recentCommand != before {
+		t.Fatalf("expected ctrl+c to NOT trigger the Copy command while the terminal has focus, got recentCommand=%q", m.recentCommand)
+	}
+}
+
+func TestOpenAndQuitStayGlobalEvenWhenTerminalHasFocus(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.focus != focusTerminal {
+		t.Fatalf("got focus %v, want focusTerminal", m.focus)
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	if cmd == nil {
+		t.Fatal("expected ctrl+q to still produce tea.Quit while the terminal has focus")
 	}
 }

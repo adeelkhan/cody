@@ -74,5 +74,6 @@ func cmdToggleFold(m Model) (Model, tea.Cmd) {
 }
 
 func cmdQuit(m Model) (Model, tea.Cmd) {
+	m.terminal.Close()
 	return m, tea.Quit
 }

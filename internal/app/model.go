@@ -11,6 +11,7 @@ import (
 	"cody/internal/editor"
 	"cody/internal/filetree"
 	"cody/internal/statusbar"
+	"cody/internal/terminal"
 )
 
 type focusArea int
@@ -18,6 +19,7 @@ type focusArea int
 const (
 	focusTree focusArea = iota
 	focusEditor
+	focusTerminal
 )
 
 const (
@@ -36,6 +38,7 @@ var (
 type Model struct {
 	tree          filetree.Model
 	editor        editor.Model
+	terminal      terminal.Model
 	focus         focusArea
 	projectName   string
 	recentCommand string
@@ -62,6 +65,7 @@ func New(rootPath string, nerdFont bool) (Model, error) {
 	return Model{
 		tree:        tree,
 		editor:      editor.New(),
+		terminal:    terminal.New(),
 		focus:       focusTree,
 		projectName: filepath.Base(absPath),
 		rootPath:    absPath,
@@ -80,11 +84,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		editorHeight := paneHeight - terminalHeight
 		m.tree = m.tree.SetSize(treeWidth-borderSize, paneHeight-borderSize)
 		m.editor = m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
+		m.terminal = m.terminal.SetSize(m.width-treeWidth-borderSize, terminalHeight-borderSize)
 		return m, nil
 	}
 	if _, ok := msg.(editor.RehighlightMsg); ok {
 		var cmd tea.Cmd
 		m.editor, cmd = m.editor.Update(msg)
+		return m, cmd
+	}
+	if _, ok := msg.(terminal.OutputMsg); ok {
+		var cmd tea.Cmd
+		m.terminal, cmd = m.terminal.Update(msg)
+		return m, cmd
+	}
+	if _, ok := msg.(terminal.ReadErrMsg); ok {
+		var cmd tea.Cmd
+		m.terminal, cmd = m.terminal.Update(msg)
 		return m, cmd
 	}
 	if m.activeDialog == dialogFileOpen {
@@ -104,17 +119,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "tab", "shift+tab":
-			m.toggleFocus()
-			return m, nil
+		case "tab":
+			m.focusNext()
+			return m.maybeStartTerminal()
+		case "shift+tab":
+			m.focusPrev()
+			return m.maybeStartTerminal()
 		case "esc":
 			if m.openMenu != "" {
 				m.openMenu = ""
 				return m, nil
 			}
 		default:
-			if cmd, ok := commandForShortcut(m.commands, msg.String()); ok {
-				return cmd.Handler(m)
+			if m.focus != focusTerminal {
+				if cmd, ok := commandForShortcut(m.commands, msg.String()); ok {
+					return cmd.Handler(m)
+				}
+			} else if msg.String() == "ctrl+o" || msg.String() == "ctrl+q" {
+				if cmd, ok := commandForShortcut(m.commands, msg.String()); ok {
+					return cmd.Handler(m)
+				}
 			}
 		}
 	case filetree.FileOpenedMsg:
@@ -133,10 +157,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	if m.focus == focusTree {
+	switch m.focus {
+	case focusTree:
 		m.tree, cmd = m.tree.Update(msg)
-	} else {
+	case focusEditor:
 		m.editor, cmd = m.editor.Update(msg)
+	case focusTerminal:
+		m.terminal, cmd = m.terminal.Update(msg)
 	}
 	return m, cmd
 }
@@ -193,12 +220,37 @@ func (m Model) clickMenuLabel(name string) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) toggleFocus() {
-	if m.focus == focusTree {
+func (m *Model) focusNext() {
+	switch m.focus {
+	case focusTree:
 		m.focus = focusEditor
-	} else {
+	case focusEditor:
+		m.focus = focusTerminal
+	case focusTerminal:
 		m.focus = focusTree
 	}
+}
+
+func (m *Model) focusPrev() {
+	switch m.focus {
+	case focusTree:
+		m.focus = focusTerminal
+	case focusEditor:
+		m.focus = focusTree
+	case focusTerminal:
+		m.focus = focusEditor
+	}
+}
+
+// maybeStartTerminal lazily spawns the shell the first time the terminal
+// pane gains focus. A no-op on every subsequent focus change.
+func (m Model) maybeStartTerminal() (Model, tea.Cmd) {
+	if m.focus != focusTerminal {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.terminal, cmd = m.terminal.Start()
+	return m, cmd
 }
 
 func (m Model) View() string {
@@ -236,10 +288,14 @@ func (m Model) View() string {
 
 	treeBorderColor := unfocusedBorderColor
 	editorBorderColor := unfocusedBorderColor
-	if m.focus == focusTree {
+	terminalBorderColor := unfocusedBorderColor
+	switch m.focus {
+	case focusTree:
 		treeBorderColor = focusedBorderColor
-	} else {
+	case focusEditor:
 		editorBorderColor = focusedBorderColor
+	case focusTerminal:
+		terminalBorderColor = focusedBorderColor
 	}
 
 	treeStyle := lipgloss.NewStyle().
@@ -252,7 +308,11 @@ func (m Model) View() string {
 		BorderForeground(editorBorderColor).
 		Width(m.width - treeWidth - borderSize).
 		Height(editorHeight - borderSize)
-	terminalStyle := lipgloss.NewStyle().Width(m.width - treeWidth).Height(terminalHeight)
+	terminalStyle := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(terminalBorderColor).
+		Width(m.width - treeWidth - borderSize).
+		Height(terminalHeight - borderSize)
 
 	// Re-derive each pane's exact interior height right before rendering
 	// (on this value-receiver copy of m, so nothing here mutates the real
@@ -262,10 +322,13 @@ func (m Model) View() string {
 	// since Lip Gloss's Height() only sets a minimum, never a max.
 	tree := m.tree.SetSize(treeWidth-borderSize, bodyHeight-borderSize)
 	editor := m.editor.SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
+	termWidth := m.width - treeWidth - borderSize
+	termHeight := terminalHeight - borderSize
+	term := m.terminal.SetSize(termWidth, termHeight)
 
 	right := lipgloss.JoinVertical(lipgloss.Left,
 		editorStyle.Render(clampBlockWidth(editor.View(), m.width-treeWidth-borderSize)),
-		terminalStyle.Render("Terminal (coming in a later phase)"),
+		terminalStyle.Render(clampBlockWidth(term.View(), termWidth)),
 	)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(clampBlockWidth(tree.View(), treeWidth-borderSize)), right)
 

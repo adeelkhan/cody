@@ -61,7 +61,7 @@ func TestCutCommandDelegatesToEditorRegardlessOfFocus(t *testing.T) {
 	}
 	updated, _ := m.Update(filetree.FileOpenedMsg{Path: file})
 	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // back to the tree
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab}) // back to the tree
 	m = updated.(Model)
 	if m.focus != focusTree {
 		t.Fatal("expected focus on tree")
@@ -104,7 +104,7 @@ func TestEditorCommandsWorkRegardlessOfFocus(t *testing.T) {
 			}
 			updated, _ = mTreeFocused.Update(filetree.FileOpenedMsg{Path: file})
 			mTreeFocused = updated.(Model)
-			updated, _ = mTreeFocused.Update(tea.KeyMsg{Type: tea.KeyTab})
+			updated, _ = mTreeFocused.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			mTreeFocused = updated.(Model)
 			if mTreeFocused.focus != focusTree {
 				t.Fatal("expected focus back on tree")
@@ -166,7 +166,7 @@ func TestToggleFoldCommandDelegatesToEditorRegardlessOfFocus(t *testing.T) {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = updated.(Model)
 	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // back to the tree
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab}) // back to the tree
 	m = updated.(Model)
 	if m.focus != focusTree {
 		t.Fatal("expected focus on tree")
