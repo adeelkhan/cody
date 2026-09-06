@@ -807,6 +807,56 @@ func TestClickInEditorPanePositionsCursor(t *testing.T) {
 	}
 }
 
+// TestScrollThenClickInNewTabPositionsCursorAtVisibleLine reproduces the
+// Critical-2 bug where a tab's editor, freshly created by openOrSwitch, was
+// never given a size (width/height stayed 0). With height <= 0,
+// editor.Model treats itself as "unbounded": ensureCursorVisible no-ops, so
+// wheel-scrolling never advances scrollOffset even though the cursor (and
+// therefore what's actually rendered) moves forward — and HandleClick, also
+// gated on height > 0, then resolves a click at row y to line y instead of
+// scrollOffset+y, landing far from the visibly rendered line.
+func TestScrollThenClickInNewTabPositionsCursorAtVisibleLine(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "big.txt")
+	var lines []string
+	for i := 0; i < 200; i++ {
+		lines = append(lines, fmt.Sprintf("line%03d", i))
+	}
+	if err := os.WriteFile(file, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	// Editor content height: paneHeight(24-1-1=22) - terminalHeight(8) -
+	// tabBarHeight(1) - borderSize(2) = 11 rows.
+	// 10 wheel notches * mouseWheelLines(3) = 30 lines moves the cursor to
+	// line 30 (0-indexed), which is well past the 11-row viewport, forcing
+	// ensureCursorVisible to scroll: scrollOffset = 30 - 11 + 1 = 20.
+	for i := 0; i < 10; i++ {
+		updated, _ = m.Update(tea.MouseMsg{X: 45, Y: 5, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+		m = updated.(Model)
+	}
+
+	// Click at relY=5 within the editor pane. editorRect.y0 = bodyTop(1) +
+	// tabBarH(1) = 2; screen y = editorRect.y0 + border(1) + relY.
+	const relY = 5
+	updated, _ = m.Update(tea.MouseMsg{X: 43, Y: 2 + 1 + relY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	line, _ := m.activeEditor().Cursor()
+	const wantLine = 20 + relY + 1 // scrollOffset(20) + relY, 1-indexed
+	if line != wantLine {
+		t.Fatalf("got cursor line=%d, want %d (scrollOffset 20 + relY %d, 1-indexed) — a newly opened tab's editor must be sized so scroll/click math isn't computed as if unbounded", line, wantLine, relY)
+	}
+}
+
 func TestClickInTerminalPaneFocusesTerminal(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, false)
@@ -984,7 +1034,7 @@ func TestClickingATabsCloseGlyphClosesIt(t *testing.T) {
 	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
 	m = updated.(Model)
 
-	region := tabRegions(m.tabs)[0]
+	region := tabRegions(m.tabs, 200)[0]
 	// closeStart is relative to the tab bar's own x0 (treeWidth); the
 	// screen column is treeWidth + closeStart.
 	updated, _ = m.Update(tea.MouseMsg{X: treeWidth + region.closeStart, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})

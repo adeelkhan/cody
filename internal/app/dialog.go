@@ -50,7 +50,8 @@ func (m Model) updateFileOpenDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !filepath.IsAbs(path) {
 			full = filepath.Join(m.rootPath, path)
 		}
-		updated, err := m.openOrSwitch(full)
+		editorW, editorH := m.newTabEditorSize()
+		updated, err := m.openOrSwitch(full, editorW, editorH)
 		if err != nil {
 			m.fileOpenError = err.Error()
 			return m, nil

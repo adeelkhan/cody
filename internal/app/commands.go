@@ -75,13 +75,14 @@ func cmdToggleFold(m Model) (Model, tea.Cmd) {
 }
 
 func cmdQuit(m Model) (Model, tea.Cmd) {
-	var dirty []string
+	hasDirty := false
 	for _, t := range m.tabs {
 		if t.editor.HasUnsavedChanges() {
-			dirty = append(dirty, t.path)
+			hasDirty = true
+			break
 		}
 	}
-	if len(dirty) == 0 {
+	if !hasDirty {
 		m.terminal.Close()
 		return m, tea.Quit
 	}

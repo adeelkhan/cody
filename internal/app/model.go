@@ -33,7 +33,12 @@ const (
 	mouseWheelLines = 3
 
 	// tabBarHeight is the height of the tab strip shown above the editor
-	// pane once at least one file is open.
+	// pane once at least one file is open. Note: on a terminal already too
+	// small to fit tree/editor/terminal without overflow, opening a first
+	// tab consumes one more row from the editor pane, making that
+	// pre-existing overflow exactly one row worse — this is a known,
+	// pre-existing overflow class and not something tabBarHeight itself
+	// can fix.
 	tabBarHeight = 1
 )
 
@@ -113,11 +118,40 @@ func (m Model) setActiveEditor(e editor.Model) Model {
 	return m
 }
 
+// tabBarH returns the tab bar's current height: tabBarHeight once at least
+// one tab is open, 0 otherwise. Centralizes logic that used to be repeated
+// (and could drift) across paneLayout, Update's WindowSizeMsg branch, and
+// View().
+func (m Model) tabBarH() int {
+	if len(m.tabs) > 0 {
+		return tabBarHeight
+	}
+	return 0
+}
+
+// newTabEditorSize computes the width/height a newly opened tab's editor
+// should be sized at, matching what Update's WindowSizeMsg branch and
+// View() compute for the active editor. It always uses the "at least one
+// tab" editor-height formula (i.e. reserves tabBarHeight), even if m.tabs
+// is currently empty: the tab being opened is about to make m.tabs
+// non-empty, so the tab bar is about to appear.
+func (m Model) newTabEditorSize() (width, height int) {
+	paneHeight := m.height - menuBarHeight - statusBarHeight
+	editorHeight := paneHeight - terminalHeight - tabBarHeight
+	return m.width - treeWidth - borderSize, editorHeight - borderSize
+}
+
 // openOrSwitch opens path in a new tab, or switches to its existing tab if
 // one is already open for that path — never creates a duplicate. On
 // failure to load a new file, m is returned unchanged (matching the
 // previous single-tab LoadFile-failure behavior) along with the error.
-func (m Model) openOrSwitch(path string) (Model, error) {
+// editorW/editorH size the new tab's editor immediately (via SetSize)
+// instead of leaving it at zero size until the next WindowSizeMsg — a
+// background tab (or one just opened, before any resize) that's never been
+// sized treats itself as "unbounded" (see editor.Model's height <= 0
+// guards), which breaks its scroll-offset math for click-to-position and
+// wheel-scroll once it's later switched to or clicked in.
+func (m Model) openOrSwitch(path string, editorW, editorH int) (Model, error) {
 	for i, t := range m.tabs {
 		if t.path == path {
 			m.activeTab = i
@@ -128,6 +162,7 @@ func (m Model) openOrSwitch(path string) (Model, error) {
 	if err != nil {
 		return m, err
 	}
+	editorModel = editorModel.SetSize(editorW, editorH)
 	m.tabs = append(m.tabs, tab{path: path, editor: editorModel})
 	m.activeTab = len(m.tabs) - 1
 	return m, nil
@@ -141,14 +176,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if sz, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = sz.Width, sz.Height
 		paneHeight := m.height - menuBarHeight - statusBarHeight
-		tabBarH := 0
-		if len(m.tabs) > 0 {
-			tabBarH = tabBarHeight
-		}
-		editorHeight := paneHeight - terminalHeight - tabBarH
+		editorHeight := paneHeight - terminalHeight - m.tabBarH()
+		editorW := m.width - treeWidth - borderSize
 		m.tree = m.tree.SetSize(treeWidth-borderSize, paneHeight-borderSize)
-		m = m.setActiveEditor(m.activeEditor().SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize))
-		m.terminal = m.terminal.SetSize(m.width-treeWidth-borderSize, terminalHeight-borderSize)
+		// Size every open tab's editor, not just the active one: a
+		// background tab left at its stale (or zero) size would treat
+		// itself as "unbounded" once switched to or clicked in, breaking
+		// its scroll-offset math (see openOrSwitch's doc comment).
+		for i := range m.tabs {
+			m.tabs[i].editor = m.tabs[i].editor.SetSize(editorW, editorHeight-borderSize)
+		}
+		m.terminal = m.terminal.SetSize(editorW, terminalHeight-borderSize)
 		return m, nil
 	}
 	if _, ok := msg.(editor.RehighlightMsg); ok {
@@ -220,7 +258,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case filetree.FileOpenedMsg:
-		updated, err := m.openOrSwitch(msg.Path)
+		editorW, editorH := m.newTabEditorSize()
+		updated, err := m.openOrSwitch(msg.Path, editorW, editorH)
 		if err != nil {
 			m.recentCommand = fmt.Sprintf("Open failed: %s", err)
 			return m, nil
@@ -311,10 +350,7 @@ func (m Model) paneLayout() (tree, tabBar, editorR, terminalR rect) {
 	}
 	bodyTop := menuBarHeight + dropdownHeight
 	bodyHeight := paneHeight - dropdownHeight
-	tabBarH := 0
-	if len(m.tabs) > 0 {
-		tabBarH = tabBarHeight
-	}
+	tabBarH := m.tabBarH()
 	editorHeight := bodyHeight - terminalHeight - tabBarH
 
 	tree = rect{0, bodyTop, treeWidth, bodyTop + bodyHeight}
@@ -340,7 +376,7 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tabBarRect.contains(x, y):
 		relX := x - tabBarRect.x0
-		region, ok := tabAt(relX, m.tabs)
+		region, ok := tabAt(relX, m.tabs, tabBarRect.x1-tabBarRect.x0)
 		if !ok {
 			return m, nil
 		}
@@ -473,10 +509,7 @@ func (m Model) View() string {
 	}
 
 	bodyHeight := paneHeight - dropdownHeight
-	tabBarH := 0
-	if len(m.tabs) > 0 {
-		tabBarH = tabBarHeight
-	}
+	tabBarH := m.tabBarH()
 	editorHeight := bodyHeight - terminalHeight - tabBarH
 
 	treeBorderColor := unfocusedBorderColor
@@ -527,7 +560,14 @@ func (m Model) View() string {
 
 	var rightSections []string
 	if len(m.tabs) > 0 {
-		rightSections = append(rightSections, renderTabBar(m.width-treeWidth-borderSize, m.tabs, m.activeTab))
+		// The tab bar has no border of its own, so it must be rendered at
+		// the same on-screen width as tabBarRect (paneLayout): m.width -
+		// treeWidth. editorStyle's content Width(m.width-treeWidth-
+		// borderSize) looks narrower only because its border adds
+		// borderSize back on screen — the tab bar has no border to add,
+		// so it must use the full span directly instead of subtracting
+		// borderSize again.
+		rightSections = append(rightSections, renderTabBar(m.width-treeWidth, m.tabs, m.activeTab))
 	}
 	rightSections = append(rightSections,
 		editorStyle.Render(clampBlockWidth(editor.View(), m.width-treeWidth-borderSize)),

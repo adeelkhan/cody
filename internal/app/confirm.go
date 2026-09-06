@@ -43,6 +43,9 @@ func (m Model) closeTab(index int) (Model, tea.Cmd) {
 // if the closed tab was last; closing a tab is otherwise a no-op on
 // activeTab unless the removal shifted it left.
 func (m Model) removeTab(index int) Model {
+	if index < 0 || index >= len(m.tabs) {
+		return m
+	}
 	m.tabs = append(m.tabs[:index], m.tabs[index+1:]...)
 	switch {
 	case len(m.tabs) == 0:
@@ -104,7 +107,11 @@ func renderConfirmDialog(width, height int, m Model) string {
 		}
 		message = fmt.Sprintf("Unsaved changes in: %s", strings.Join(names, ", "))
 	case confirmCloseTab:
-		message = fmt.Sprintf("%s has unsaved changes.", filepath.Base(m.tabs[m.pendingConfirmTab].path))
+		name := "the tab"
+		if m.pendingConfirmTab >= 0 && m.pendingConfirmTab < len(m.tabs) {
+			name = filepath.Base(m.tabs[m.pendingConfirmTab].path)
+		}
+		message = fmt.Sprintf("%s has unsaved changes.", name)
 	}
 
 	anywayLabel := "Quit anyway"

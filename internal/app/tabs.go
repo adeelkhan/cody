@@ -35,28 +35,49 @@ func tabPlainLabel(t tab) string {
 }
 
 // tabRegions computes each tab's column range in the rendered tab bar, in
-// order. Must stay in sync with renderTabBar's own layout.
-func tabRegions(tabs []tab) []tabRegion {
+// order. Must stay in sync with renderTabBar's own layout. width is the
+// rendered tab bar's width in columns: renderTabBar truncates its content to
+// this width (via clampBlockWidth's MaxWidth, not Width, to avoid wrapping),
+// so once a tab's region would start at or past width it — and every tab
+// after it — is not actually visible and must not be returned, or a click
+// over that blank truncated area would incorrectly resolve to a tab that
+// isn't there.
+func tabRegions(tabs []tab, width int) []tabRegion {
 	var regions []tabRegion
 	col := 0
 	closeWidth := lipgloss.Width("× ")
 	for i, t := range tabs {
-		width := lipgloss.Width(tabPlainLabel(t))
+		if col >= width {
+			break
+		}
+		tabWidth := lipgloss.Width(tabPlainLabel(t))
+		endCol := col + tabWidth
+		if endCol > width {
+			endCol = width
+		}
+		closeEnd := col + tabWidth
+		if closeEnd > width {
+			closeEnd = width
+		}
+		closeStart := col + tabWidth - closeWidth
+		if closeStart > closeEnd {
+			closeStart = closeEnd
+		}
 		regions = append(regions, tabRegion{
 			tabIndex:   i,
 			startCol:   col,
-			endCol:     col + width,
-			closeStart: col + width - closeWidth,
-			closeEnd:   col + width,
+			endCol:     endCol,
+			closeStart: closeStart,
+			closeEnd:   closeEnd,
 		})
-		col += width
+		col += tabWidth
 	}
 	return regions
 }
 
 // tabAt returns the region a column falls in, if any.
-func tabAt(col int, tabs []tab) (tabRegion, bool) {
-	for _, r := range tabRegions(tabs) {
+func tabAt(col int, tabs []tab, width int) (tabRegion, bool) {
+	for _, r := range tabRegions(tabs, width) {
 		if col >= r.startCol && col < r.endCol {
 			return r, true
 		}
@@ -87,5 +108,12 @@ func renderTabBar(width int, tabs []tab, activeTab int) string {
 		b.WriteString(main)
 		b.WriteString(" × ")
 	}
-	return tabBarStyle.Width(width).Render(b.String())
+	// Clamp to width via MaxWidth (truncates) rather than letting
+	// tabBarStyle's own Width(width) below wrap: Width() only sets a
+	// minimum and wraps content wider than it onto additional physical
+	// rows, which would silently break every caller that assumes the tab
+	// bar is exactly one row tall (paneLayout's tabBarRect, the
+	// WindowSizeMsg handler's editorHeight math, tabRegions' hit-testing).
+	truncated := lipgloss.NewStyle().MaxWidth(width).Render(b.String())
+	return tabBarStyle.Width(width).Render(truncated)
 }

@@ -13,7 +13,7 @@ import (
 
 func TestTabRegionsAreContiguousAndOrdered(t *testing.T) {
 	tabs := []tab{{path: "/a.go"}, {path: "/bb.go"}, {path: "/ccc.go"}}
-	regions := tabRegions(tabs)
+	regions := tabRegions(tabs, 200)
 	if len(regions) != 3 {
 		t.Fatalf("got %d regions, want 3", len(regions))
 	}
@@ -37,23 +37,40 @@ func TestTabRegionsAreContiguousAndOrdered(t *testing.T) {
 
 func TestTabAtFindsCorrectRegionIncludingCloseGlyph(t *testing.T) {
 	tabs := []tab{{path: "/a.go"}, {path: "/bb.go"}}
-	regions := tabRegions(tabs)
+	regions := tabRegions(tabs, 200)
 
-	first, ok := tabAt(regions[0].startCol, tabs)
+	first, ok := tabAt(regions[0].startCol, tabs, 200)
 	if !ok || first.tabIndex != 0 {
 		t.Fatalf("got %+v, ok=%v, want tab 0", first, ok)
 	}
-	closeClick, ok := tabAt(regions[0].closeStart, tabs)
+	closeClick, ok := tabAt(regions[0].closeStart, tabs, 200)
 	if !ok || closeClick.tabIndex != 0 {
 		t.Fatalf("expected clicking tab 0's close glyph to still resolve to tab 0, got %+v, ok=%v", closeClick, ok)
 	}
-	second, ok := tabAt(regions[1].startCol, tabs)
+	second, ok := tabAt(regions[1].startCol, tabs, 200)
 	if !ok || second.tabIndex != 1 {
 		t.Fatalf("got %+v, ok=%v, want tab 1", second, ok)
 	}
-	_, ok = tabAt(regions[len(regions)-1].endCol, tabs)
+	_, ok = tabAt(regions[len(regions)-1].endCol, tabs, 200)
 	if ok {
 		t.Fatal("expected a column past the last tab to miss")
+	}
+}
+
+func TestTabRegionsTruncatesAtNarrowWidth(t *testing.T) {
+	tabs := []tab{
+		{path: "/one.go"}, {path: "/two.go"}, {path: "/three.go"},
+		{path: "/four.go"}, {path: "/five.go"}, {path: "/six.go"},
+	}
+	const width = 20
+	regions := tabRegions(tabs, width)
+	for _, r := range regions {
+		if r.startCol >= width {
+			t.Fatalf("region %+v has startCol >= width(%d)", r, width)
+		}
+		if r.endCol > width {
+			t.Fatalf("region %+v has endCol > width(%d)", r, width)
+		}
 	}
 }
 
