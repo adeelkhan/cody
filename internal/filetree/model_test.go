@@ -244,3 +244,32 @@ func TestScrollMovesTreeSelection(t *testing.T) {
 		t.Fatalf("got cursor %d, want 2", m.cursor)
 	}
 }
+
+func TestSetDirtyShowsModifiedIndicator(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "a.go"), "")
+	mustWriteFile(t, filepath.Join(dir, "b.go"), "")
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirtyPath := m.flat[0].node.Path
+	m = m.SetDirty(map[string]bool{dirtyPath: true})
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(lines[0], "(M)") {
+		t.Fatalf("expected %q to show a modified indicator, got line %q", dirtyPath, lines[0])
+	}
+	if strings.Contains(lines[1], "(M)") {
+		t.Fatalf("expected the clean file to show no modified indicator, got line %q", lines[1])
+	}
+}
+
+func TestSetDirtyWithEmptyMapShowsNoIndicators(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	view := m.View()
+	if strings.Contains(view, "(M)") {
+		t.Fatal("expected no modified indicators when SetDirty was never called")
+	}
+}

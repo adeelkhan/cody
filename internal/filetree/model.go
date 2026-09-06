@@ -19,6 +19,7 @@ type FileOpenedMsg struct {
 const scrollbarGutterWidth = 2
 
 var scrollbarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+var dirtyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 
 type flatItem struct {
 	node  *Node
@@ -33,6 +34,7 @@ type Model struct {
 	width        int
 	height       int
 	scrollOffset int
+	dirty        map[string]bool
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -62,6 +64,13 @@ func (m *Model) rebuildFlat() {
 func (m Model) SetSize(width, height int) Model {
 	m.width, m.height = width, height
 	m.ensureCursorVisible()
+	return m
+}
+
+// SetDirty marks which paths (absolute, matching Node.Path) have unsaved
+// changes, so View() can show a modified indicator next to their name.
+func (m Model) SetDirty(dirty map[string]bool) Model {
+	m.dirty = dirty
 	return m
 }
 
@@ -216,6 +225,9 @@ func (m Model) View() string {
 		prefix := strings.Repeat("  ", item.depth)
 		icon := IconFor(item.node, m.nerdFont)
 		line := fmt.Sprintf("%s%s %s", prefix, icon, item.node.Name)
+		if m.dirty[item.node.Path] {
+			line += dirtyStyle.Render(" (M)")
+		}
 		if idx == m.cursor {
 			line = "> " + line
 		} else {
