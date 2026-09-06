@@ -159,11 +159,49 @@ func (m Model) Close() error {
 	return m.pty.Close()
 }
 
-// encodeKey is completed in Task 2. This minimal version exists so Task 1
-// can be independently tested and reviewed before Task 2 lands.
+// encodeKey translates a Bubble Tea key event into the raw byte sequence a
+// real terminal would send for that key, for forwarding to a pty's stdin.
+// Returns nil for keys with no defined terminal encoding.
+//
+// Verified against bubbletea v1.3.10's key.go: KeyType values 0-127 for
+// KeyCtrlA..KeyCtrlZ, the Ctrl-punctuation variants, KeyEnter, KeyTab,
+// KeyEsc, and KeyBackspace are literally defined as their ASCII
+// control-code byte value (e.g. KeyCtrlC = 3, KeyEnter = 13,
+// KeyBackspace = 127) — forwarding byte(msg.Type) for that whole range is
+// correct by construction, not a coincidence. Named cursor/navigation keys
+// (KeyUp, KeyHome, etc.) are separate negative sentinel values needing
+// their own standard xterm escape sequences (see this plan's Global
+// Constraints for the one documented limitation: normal, not
+// application, cursor-key mode).
 func encodeKey(msg tea.KeyMsg) []byte {
-	if msg.Type == tea.KeyRunes {
+	switch msg.Type {
+	case tea.KeyRunes:
 		return []byte(string(msg.Runes))
+	case tea.KeySpace:
+		return []byte(" ")
+	case tea.KeyUp:
+		return []byte("\x1b[A")
+	case tea.KeyDown:
+		return []byte("\x1b[B")
+	case tea.KeyRight:
+		return []byte("\x1b[C")
+	case tea.KeyLeft:
+		return []byte("\x1b[D")
+	case tea.KeyHome:
+		return []byte("\x1b[H")
+	case tea.KeyEnd:
+		return []byte("\x1b[F")
+	case tea.KeyPgUp:
+		return []byte("\x1b[5~")
+	case tea.KeyPgDown:
+		return []byte("\x1b[6~")
+	case tea.KeyDelete:
+		return []byte("\x1b[3~")
+	case tea.KeyInsert:
+		return []byte("\x1b[2~")
+	}
+	if msg.Type >= 0 && msg.Type <= 127 {
+		return []byte{byte(msg.Type)}
 	}
 	return nil
 }
