@@ -4,24 +4,22 @@ A terminal-based code editor written in Go.
 
 ## Status
 
-Phase 5 (embedded terminal) of a phased build — see
+Phase 6 (in-buffer search) of a phased build — see
 `docs/superpowers/specs/2026-09-05-cody-tui-editor-design.md` for the full
 design and `docs/superpowers/plans/` for phase-by-phase implementation plans.
 
-This phase adds a third focus-cyclable pane that runs a real shell (`$SHELL`,
-spawned via `charmbracelet/x/xpty` and rendered using `charmbracelet/x/vt`)
-in a pseudo-terminal. The terminal pane spawns on first focus and persists
-until quit. Typing a command sends keystrokes through the real pty, and the
-shell's output is rendered directly in the pane. The pty and emulator are
-resized with the pane and the shell is notified via `SIGWINCH`. There is no
-scrollback — the pane shows the emulator's current screen grid only.
+This phase adds incremental find-in-buffer search with `Ctrl+F`, supporting
+case-insensitive matching in the current buffer only. Type to jump to the nearest
+match, use `Enter`/`Shift+Enter` to cycle through next/previous matches, and
+`Esc` to close and clear the search. The search is performed live as you type,
+with the first match highlighted as the cursor position.
 
-Previous phases added: phase 4b (code folding for function/block bodies and
-Markdown sections/code blocks — `Ctrl+K` toggles), phase 4 (independent
-scrolling/clipping for tree and editor panes, scrollbars, auto-scroll to
-cursor). The project tree and editor panes each scroll independently and stay
-clipped to their box's height — opening a large file no longer pushes the
-tree pane out of view.
+Previous phases added: phase 5 (embedded terminal with real shell pane),
+phase 4b (code folding for function/block bodies and Markdown sections/code blocks —
+`Ctrl+K` toggles), phase 4 (independent scrolling/clipping for tree and editor
+panes, scrollbars, auto-scroll to cursor). The project tree and editor panes each
+scroll independently and stay clipped to their box's height — opening a large file
+no longer pushes the tree pane out of view.
 
 Building this phase requires a C compiler on your machine (CGO), since
 tree-sitter's grammars are C libraries — this was already noted as a
@@ -34,10 +32,17 @@ go build -o cody ./cmd/cody
 ./cody <path-to-a-project>
 ```
 
-## Keybindings (phase 5)
+## Keybindings (phase 6)
 
 - `Tab` / `Shift+Tab` — cycle focus through the three panes (project tree →
   editor → terminal → tree, and reverse)
+- `Ctrl+F` — open incremental find (case-insensitive, current buffer
+  only); type to jump to the nearest match, `Enter`/`Shift+Enter` for
+  next/previous match, `Esc` closes and clears the search (requires a
+  terminal that reports `Shift+Enter` distinctly from plain `Enter` —
+  the same class of terminal-capability caveat this project already
+  documents for `Shift+Arrow` selection; most modern terminal emulators
+  handle it, e.g. iTerm2, Alacritty, Kitty, WezTerm)
 - **Project tree**: arrows or `hjkl` to navigate, `Enter`/`l` to open a file or
   toggle a directory's expand/collapse state, `h` to collapse
 - **Editor**: arrows to move the cursor, typing inserts text, `Enter` for a

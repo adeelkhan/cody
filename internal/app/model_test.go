@@ -680,3 +680,48 @@ func TestTerminalPaneShowsRealShellOutputThroughTheComposedApp(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchingAndCyclingMatchesThroughTheComposedApp(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "main.go")
+	src := "package main\n\nfunc add(a, b int) int {\n\treturn a + b\n}\n\nfunc addTwo(x int) int {\n\treturn add(x, 2)\n}\n"
+	if err := os.WriteFile(file, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	m = updated.(Model)
+	if m.activeDialog != dialogSearch {
+		t.Fatalf("got activeDialog=%v, want dialogSearch", m.activeDialog)
+	}
+
+	for _, r := range "add" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	line, _ := m.editor.Cursor()
+	if line != 3 {
+		t.Fatalf("got cursor line=%d, want 3 (the first \"add\" match, in \"func add(\")", line)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	line, _ = m.editor.Cursor()
+	if line != 7 {
+		t.Fatalf("got cursor line=%d, want 7 (the second \"add\" match, in \"func addTwo(\")", line)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.activeDialog != dialogNone {
+		t.Fatalf("got activeDialog=%v, want dialogNone", m.activeDialog)
+	}
+}
