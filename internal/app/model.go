@@ -28,6 +28,9 @@ const (
 	menuBarHeight   = 1
 	terminalHeight  = 8
 	borderSize      = 2 // lipgloss.NormalBorder adds 1 cell on each side
+
+	// mouseWheelLines is how many rows a single wheel notch scrolls.
+	mouseWheelLines = 3
 )
 
 var (
@@ -117,8 +120,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
-		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		switch msg.Button {
+		case tea.MouseButtonLeft:
 			return m.handleClick(msg.X, msg.Y)
+		case tea.MouseButtonWheelUp:
+			return m.handleWheel(msg.X, msg.Y, -mouseWheelLines)
+		case tea.MouseButtonWheelDown:
+			return m.handleWheel(msg.X, msg.Y, mouseWheelLines)
 		}
 		return m, nil
 	case tea.KeyMsg:
@@ -184,26 +195,101 @@ func (m Model) handleClick(x, y int) (tea.Model, tea.Cmd) {
 		}
 		return m.clickMenuLabel(name)
 	}
-	if m.openMenu == "" {
-		return m, nil
-	}
-	label, ok := findLabel(m.openMenu)
-	if !ok || x < label.startCol || x >= label.startCol+dropdownWidth {
+	if m.openMenu != "" {
+		label, ok := findLabel(m.openMenu)
+		if !ok || x < label.startCol || x >= label.startCol+dropdownWidth {
+			m.openMenu = ""
+			return m, nil
+		}
+		items := menuItemsFor(m.openMenu)
+		row := y - 1
+		if row < 0 || row >= len(items) {
+			m.openMenu = ""
+			return m, nil
+		}
+		cmd, ok := commandByName(m.commands, items[row])
 		m.openMenu = ""
+		if !ok {
+			return m, nil
+		}
+		return cmd.Handler(m)
+	}
+	return m.handlePaneClick(x, y)
+}
+
+// rect is a screen-space rectangle, half-open on both axes: it contains x
+// in [x0, x1) and y in [y0, y1).
+type rect struct{ x0, y0, x1, y1 int }
+
+func (r rect) contains(x, y int) bool {
+	return x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1
+}
+
+// paneLayout computes the on-screen rectangles (border included) of the
+// tree, editor, and terminal panes for the model's current size and menu
+// state. It mirrors the geometry View() renders so a mouse event's (x, y)
+// can be routed to whichever pane's box contains it — it must be kept in
+// sync with View() if that layout ever changes.
+func (m Model) paneLayout() (tree, editorR, terminalR rect) {
+	paneHeight := m.height - menuBarHeight - statusBarHeight
+	dropdownHeight := 0
+	if m.openMenu != "" {
+		dropdownHeight = lipgloss.Height(renderDropdown(m.openMenu, m.commands))
+	}
+	bodyTop := menuBarHeight + dropdownHeight
+	bodyHeight := paneHeight - dropdownHeight
+	editorHeight := bodyHeight - terminalHeight
+
+	tree = rect{0, bodyTop, treeWidth, bodyTop + bodyHeight}
+	editorR = rect{treeWidth, bodyTop, m.width, bodyTop + editorHeight}
+	terminalR = rect{treeWidth, bodyTop + editorHeight, m.width, bodyTop + bodyHeight}
+	return
+}
+
+// handlePaneClick routes a click that landed outside the menu bar and any
+// open dropdown to whichever pane's rectangle contains it, switching focus
+// there and forwarding the click for pane-specific handling (tree row
+// selection, editor cursor placement). A click inside no pane (e.g. on a
+// border, or before the first WindowSizeMsg) is a no-op.
+func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
+	treeRect, editorRect, terminalRect := m.paneLayout()
+	switch {
+	case treeRect.contains(x, y):
+		m.focus = focusTree
+		relY := y - treeRect.y0 - 1 // -1 excludes the top border
+		var cmd tea.Cmd
+		m.tree, cmd = m.tree.HandleClick(relY)
+		return m, cmd
+	case editorRect.contains(x, y):
+		m.focus = focusEditor
+		relX := x - editorRect.x0 - 1
+		relY := y - editorRect.y0 - 1
+		m.editor = m.editor.HandleClick(relX, relY)
+		return m, nil
+	case terminalRect.contains(x, y):
+		m.focus = focusTerminal
+		return m.maybeStartTerminal()
+	}
+	return m, nil
+}
+
+// handleWheel scrolls whichever pane's rectangle contains (x, y) — the pane
+// under the pointer, not necessarily the focused one — by delta lines
+// (negative scrolls up). No-op outside any pane, over the terminal (which
+// has no independent scroll-only view), or while a dialog or dropdown is
+// open.
+func (m Model) handleWheel(x, y, delta int) (tea.Model, tea.Cmd) {
+	if m.activeDialog != dialogNone || m.openMenu != "" {
 		return m, nil
 	}
-	items := menuItemsFor(m.openMenu)
-	row := y - 1
-	if row < 0 || row >= len(items) {
-		m.openMenu = ""
-		return m, nil
+	treeRect, editorRect, _ := m.paneLayout()
+	switch {
+	case treeRect.contains(x, y):
+		m.tree = m.tree.Scroll(delta)
+	case editorRect.contains(x, y):
+		m.editor = m.editor.ScrollLines(delta)
 	}
-	cmd, ok := commandByName(m.commands, items[row])
-	m.openMenu = ""
-	if !ok {
-		return m, nil
-	}
-	return cmd.Handler(m)
+	return m, nil
 }
 
 func (m Model) clickMenuLabel(name string) (Model, tea.Cmd) {

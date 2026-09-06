@@ -725,3 +725,127 @@ func TestSearchingAndCyclingMatchesThroughTheComposedApp(t *testing.T) {
 		t.Fatalf("got activeDialog=%v, want dialogNone", m.activeDialog)
 	}
 }
+
+// Pane geometry for an 80x24 window (see paneLayout): menu bar at y=0, body
+// starting at y=1 with height 22 (no dropdown open). Tree occupies x[0,30),
+// editor x[30,80) y[1,15), terminal x[30,80) y[15,23).
+
+func TestClickInTreePaneFocusesTreeAndSelectsRow(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"0.go", "1.go", "2.go", "3.go", "4.go"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(""), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.focus = focusEditor
+
+	// row = y(5) - bodyTop(1) - border(1) = 3 -> "3.go".
+	updated, cmd := m.Update(tea.MouseMsg{X: 5, Y: 5, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+	if m.focus != focusTree {
+		t.Fatal("expected clicking the tree pane to focus it")
+	}
+	if cmd == nil {
+		t.Fatal("expected clicking a file row to activate it (open the file)")
+	}
+	msg := cmd()
+	opened, ok := msg.(filetree.FileOpenedMsg)
+	if !ok {
+		t.Fatalf("got %T, want FileOpenedMsg", msg)
+	}
+	if filepath.Base(opened.Path) != "3.go" {
+		t.Fatalf("got %q, want 3.go (row 3)", filepath.Base(opened.Path))
+	}
+}
+
+func TestClickInEditorPanePositionsCursor(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "test.go")
+	src := "line0\nline1\nline2\nline3\nline4\n"
+	if err := os.WriteFile(file, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+	m.focus = focusTree
+
+	// x=45 -> relX = 45 - 30(editor x0) - 1(border) = 14 -> col = 14 - editorGutterWidth(9) = 5.
+	// y=4  -> relY = 4 - 1(bodyTop) - 1(border) = 2 -> buffer line index 2 ("line2").
+	updated, _ = m.Update(tea.MouseMsg{X: 45, Y: 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+	if m.focus != focusEditor {
+		t.Fatal("expected clicking the editor pane to focus it")
+	}
+	line, col := m.editor.Cursor()
+	if line != 3 || col != 6 {
+		t.Fatalf("got line=%d col=%d, want 3,6 (line2, zero-indexed col 5)", line, col)
+	}
+}
+
+func TestClickInTerminalPaneFocusesTerminal(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	// y=18 lands inside the terminal rect (y in [15, 23)).
+	updated, _ = m.Update(tea.MouseMsg{X: 45, Y: 18, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+	if m.focus != focusTerminal {
+		t.Fatal("expected clicking the terminal pane to focus it")
+	}
+	if !m.terminal.Started() {
+		t.Fatal("expected the terminal to lazily start on first focus")
+	}
+}
+
+func TestWheelOverTreeScrollsWithoutChangingFocus(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 30; i++ {
+		name := fmt.Sprintf("%02d.go", i)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(""), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.focus = focusEditor
+
+	before := m.tree.View()
+	if !strings.Contains(before, "00.go") {
+		t.Fatal("setup failed: expected 00.go visible initially")
+	}
+
+	// 8 notches * mouseWheelLines(3) = 24 rows, past the ~20-row viewport,
+	// forcing the tree to scroll.
+	for i := 0; i < 8; i++ {
+		updated, _ = m.Update(tea.MouseMsg{X: 5, Y: 5, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+		m = updated.(Model)
+	}
+	if m.focus != focusEditor {
+		t.Fatal("expected wheel scrolling not to change focus")
+	}
+	after := m.tree.View()
+	if strings.Contains(after, "00.go") {
+		t.Fatal("expected 00.go to have scrolled out of view")
+	}
+}

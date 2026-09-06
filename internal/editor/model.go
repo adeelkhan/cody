@@ -191,6 +191,65 @@ func (m Model) Filetype() string {
 	return strings.TrimPrefix(filepath.Ext(m.buf.Path), ".")
 }
 
+// editorGutterWidth is the fixed-width prefix rendered before each line's
+// content: cursorMark (2) + foldMark (2) + a 4-digit line number + one
+// space. HandleClick uses this to translate a click's screen column into a
+// column within the line's own text.
+const editorGutterWidth = 9
+
+// HandleClick positions the cursor at the buffer line and column
+// corresponding to a click at (x, y), where x and y are relative to the
+// pane's own content area (border already excluded by the caller). y is an
+// index into the currently visible (non-folded) rows, matching what View()
+// rendered. A click past the last visible row, or before any file is
+// loaded, is a no-op.
+func (m Model) HandleClick(x, y int) Model {
+	if m.buf == nil {
+		return m
+	}
+	rows := m.visibleLines()
+	idx := y
+	if m.height > 0 {
+		idx = m.scrollOffset + y
+	}
+	if idx < 0 || idx >= len(rows) {
+		return m
+	}
+	m.selecting = false
+	m.cursorLine = rows[idx]
+	col := x - editorGutterWidth
+	if col < 0 {
+		col = 0
+	}
+	lineLen := len([]rune(m.buf.Lines[m.cursorLine]))
+	if col > lineLen {
+		col = lineLen
+	}
+	m.cursorCol = col
+	m.ensureCursorVisible()
+	return m
+}
+
+// ScrollLines moves the cursor n visible lines (negative scrolls up,
+// positive scrolls down) and re-clamps the viewport. There is no
+// scroll-only state independent of the cursor, so mouse-wheel scrolling
+// moves the cursor the same way repeated arrow-key presses would, just
+// several lines per notch.
+func (m Model) ScrollLines(n int) Model {
+	if m.buf == nil {
+		return m
+	}
+	m.selecting = false
+	for ; n > 0; n-- {
+		m.moveDown()
+	}
+	for ; n < 0; n++ {
+		m.moveUp()
+	}
+	m.ensureCursorVisible()
+	return m
+}
+
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case RehighlightMsg:
@@ -747,10 +806,18 @@ func (m Model) View() string {
 		if isCursorLine {
 			rendered = applyCursorAt(rendered, m.cursorCol)
 		}
+		foldMark := "  "
+		if _, foldable := m.foldAt(i); foldable {
+			if m.foldedStartLines[i] {
+				foldMark = "▸ "
+			} else {
+				foldMark = "▾ "
+			}
+		}
 		if m.foldedStartLines[i] {
 			rendered += " ⋯"
 		}
-		row := fmt.Sprintf("%s%4d %s", cursorMark, i+1, rendered)
+		row := fmt.Sprintf("%s%s%4d %s", cursorMark, foldMark, i+1, rendered)
 		if clip {
 			// Pad (never wrap or truncate) to the pane's known content width
 			// so the bar lands in a fixed column at the right edge, forming

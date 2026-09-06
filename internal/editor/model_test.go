@@ -1109,3 +1109,59 @@ func TestFindNextUnfoldsFoldedMatch(t *testing.T) {
 		t.Error("fold starting at line 0 should be unfolded after FindNext jumped into it")
 	}
 }
+
+func TestFoldGutterShowsExpandedAndCollapsedGlyphs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	src := "package main\n\nfunc add(a int, b int) int {\n\treturn a + 42\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.SetSize(60, 10)
+
+	if !strings.Contains(m.View(), "▾") {
+		t.Fatal("expected an expanded-fold glyph before folding")
+	}
+
+	for i := 0; i < 2; i++ {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+
+	if !strings.Contains(m.View(), "▸") {
+		t.Fatal("expected a collapsed-fold glyph after folding")
+	}
+}
+
+func TestHandleClickPositionsCursorInEditor(t *testing.T) {
+	m := setupEditor(t, "line0\nline1\nline2\n")
+	m = m.SetSize(40, 10)
+
+	// x = editorGutterWidth + 2 lands on column 2 of the clicked line.
+	m = m.HandleClick(editorGutterWidth+2, 1)
+
+	line, col := m.Cursor()
+	if line != 2 || col != 3 {
+		t.Fatalf("got line=%d col=%d, want 2,3", line, col)
+	}
+}
+
+func TestScrollLinesMovesCursorDownThenUp(t *testing.T) {
+	m := setupEditor(t, "a\nb\nc\nd\ne\n")
+	m = m.SetSize(40, 10)
+
+	m = m.ScrollLines(3)
+	if line, _ := m.Cursor(); line != 4 {
+		t.Fatalf("got line=%d, want 4 after scrolling down 3", line)
+	}
+
+	m = m.ScrollLines(-2)
+	if line, _ := m.Cursor(); line != 2 {
+		t.Fatalf("got line=%d, want 2 after scrolling up 2", line)
+	}
+}

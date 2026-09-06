@@ -126,6 +126,42 @@ func (m *Model) collapseCurrent() {
 	}
 }
 
+// HandleClick selects the row at y (relative to the pane's own content
+// area, matching what View() rendered — an index into the visible rows, not
+// the full flat list) and activates it exactly as Enter would: expanding or
+// collapsing a directory, or opening a file. A click past the last item is
+// a no-op.
+func (m Model) HandleClick(y int) (Model, tea.Cmd) {
+	idx := m.scrollOffset + y
+	if idx < 0 || idx >= len(m.flat) {
+		return m, nil
+	}
+	m.cursor = idx
+	var cmd tea.Cmd
+	m, cmd = m.activateCurrent()
+	m.ensureCursorVisible()
+	return m, cmd
+}
+
+// Scroll moves the selection n rows (negative scrolls up, positive scrolls
+// down) and re-clamps the viewport, for mouse-wheel scrolling — mirrors
+// repeated up/down key presses rather than introducing independent
+// scroll-only state.
+func (m Model) Scroll(n int) Model {
+	if len(m.flat) == 0 {
+		return m
+	}
+	m.cursor += n
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	if m.cursor > len(m.flat)-1 {
+		m.cursor = len(m.flat) - 1
+	}
+	m.ensureCursorVisible()
+	return m
+}
+
 func (m Model) activateCurrent() (Model, tea.Cmd) {
 	if len(m.flat) == 0 {
 		return m, nil

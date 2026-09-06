@@ -206,3 +206,41 @@ func TestPaddingALongNameDoesNotWrapItIntoMultiplePhysicalLines(t *testing.T) {
 		t.Fatal("expected the long name's full content to still be present, unwrapped")
 	}
 }
+
+func TestHandleClickSelectsAndActivatesRow(t *testing.T) {
+	m := setupModelWithNFiles(t, 5)
+	m, cmd := m.HandleClick(2)
+	if m.cursor != 2 {
+		t.Fatalf("got cursor %d, want 2", m.cursor)
+	}
+	if cmd == nil {
+		t.Fatal("expected clicking a file row to activate it (open the file)")
+	}
+	msg := cmd()
+	if _, ok := msg.(FileOpenedMsg); !ok {
+		t.Fatalf("got %T, want FileOpenedMsg", msg)
+	}
+}
+
+func TestHandleClickPastLastRowIsANoOp(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m, cmd := m.HandleClick(10)
+	if m.cursor != 0 {
+		t.Fatalf("got cursor %d, want 0 (unchanged)", m.cursor)
+	}
+	if cmd != nil {
+		t.Fatal("expected no command for a click past the last row")
+	}
+}
+
+func TestScrollMovesTreeSelection(t *testing.T) {
+	m := setupModelWithNFiles(t, 10)
+	m = m.Scroll(3)
+	if m.cursor != 3 {
+		t.Fatalf("got cursor %d, want 3", m.cursor)
+	}
+	m = m.Scroll(-1)
+	if m.cursor != 2 {
+		t.Fatalf("got cursor %d, want 2", m.cursor)
+	}
+}
