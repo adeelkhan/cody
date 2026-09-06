@@ -31,6 +31,10 @@ const (
 
 	// mouseWheelLines is how many rows a single wheel notch scrolls.
 	mouseWheelLines = 3
+
+	// tabBarHeight is the height of the tab strip shown above the editor
+	// pane once at least one file is open.
+	tabBarHeight = 1
 )
 
 var (
@@ -137,7 +141,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if sz, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = sz.Width, sz.Height
 		paneHeight := m.height - menuBarHeight - statusBarHeight
-		editorHeight := paneHeight - terminalHeight
+		tabBarH := 0
+		if len(m.tabs) > 0 {
+			tabBarH = tabBarHeight
+		}
+		editorHeight := paneHeight - terminalHeight - tabBarH
 		m.tree = m.tree.SetSize(treeWidth-borderSize, paneHeight-borderSize)
 		m = m.setActiveEditor(m.activeEditor().SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize))
 		m.terminal = m.terminal.SetSize(m.width-treeWidth-borderSize, terminalHeight-borderSize)
@@ -295,7 +303,7 @@ func (r rect) contains(x, y int) bool {
 // state. It mirrors the geometry View() renders so a mouse event's (x, y)
 // can be routed to whichever pane's box contains it — it must be kept in
 // sync with View() if that layout ever changes.
-func (m Model) paneLayout() (tree, editorR, terminalR rect) {
+func (m Model) paneLayout() (tree, tabBar, editorR, terminalR rect) {
 	paneHeight := m.height - menuBarHeight - statusBarHeight
 	dropdownHeight := 0
 	if m.openMenu != "" {
@@ -303,11 +311,16 @@ func (m Model) paneLayout() (tree, editorR, terminalR rect) {
 	}
 	bodyTop := menuBarHeight + dropdownHeight
 	bodyHeight := paneHeight - dropdownHeight
-	editorHeight := bodyHeight - terminalHeight
+	tabBarH := 0
+	if len(m.tabs) > 0 {
+		tabBarH = tabBarHeight
+	}
+	editorHeight := bodyHeight - terminalHeight - tabBarH
 
 	tree = rect{0, bodyTop, treeWidth, bodyTop + bodyHeight}
-	editorR = rect{treeWidth, bodyTop, m.width, bodyTop + editorHeight}
-	terminalR = rect{treeWidth, bodyTop + editorHeight, m.width, bodyTop + bodyHeight}
+	tabBar = rect{treeWidth, bodyTop, m.width, bodyTop + tabBarH}
+	editorR = rect{treeWidth, bodyTop + tabBarH, m.width, bodyTop + tabBarH + editorHeight}
+	terminalR = rect{treeWidth, bodyTop + tabBarH + editorHeight, m.width, bodyTop + bodyHeight}
 	return
 }
 
@@ -317,7 +330,7 @@ func (m Model) paneLayout() (tree, editorR, terminalR rect) {
 // selection, editor cursor placement). A click inside no pane (e.g. on a
 // border, or before the first WindowSizeMsg) is a no-op.
 func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
-	treeRect, editorRect, terminalRect := m.paneLayout()
+	treeRect, tabBarRect, editorRect, terminalRect := m.paneLayout()
 	switch {
 	case treeRect.contains(x, y):
 		m.focus = focusTree
@@ -325,6 +338,18 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.tree, cmd = m.tree.HandleClick(relY)
 		return m, cmd
+	case tabBarRect.contains(x, y):
+		relX := x - tabBarRect.x0
+		region, ok := tabAt(relX, m.tabs)
+		if !ok {
+			return m, nil
+		}
+		if relX >= region.closeStart && relX < region.closeEnd {
+			return m.closeTab(region.tabIndex)
+		}
+		m.activeTab = region.tabIndex
+		m.focus = focusEditor
+		return m, nil
 	case editorRect.contains(x, y):
 		m.focus = focusEditor
 		relX := x - editorRect.x0 - 1
@@ -348,7 +373,7 @@ func (m Model) handleWheel(x, y, delta int) (tea.Model, tea.Cmd) {
 	if m.activeDialog != dialogNone || m.openMenu != "" {
 		return m, nil
 	}
-	treeRect, editorRect, _ := m.paneLayout()
+	treeRect, _, editorRect, _ := m.paneLayout()
 	switch {
 	case treeRect.contains(x, y):
 		m.tree = m.tree.Scroll(delta)
@@ -448,7 +473,11 @@ func (m Model) View() string {
 	}
 
 	bodyHeight := paneHeight - dropdownHeight
-	editorHeight := bodyHeight - terminalHeight
+	tabBarH := 0
+	if len(m.tabs) > 0 {
+		tabBarH = tabBarHeight
+	}
+	editorHeight := bodyHeight - terminalHeight - tabBarH
 
 	treeBorderColor := unfocusedBorderColor
 	editorBorderColor := unfocusedBorderColor
@@ -484,16 +513,27 @@ func (m Model) View() string {
 	// that height doesn't account for a transient dropdown's height, and a
 	// stale height would let a pane's content silently overflow its box,
 	// since Lip Gloss's Height() only sets a minimum, never a max.
-	tree := m.tree.SetSize(treeWidth-borderSize, bodyHeight-borderSize)
+	dirty := map[string]bool{}
+	for _, t := range m.tabs {
+		if t.editor.HasUnsavedChanges() {
+			dirty[t.path] = true
+		}
+	}
+	tree := m.tree.SetSize(treeWidth-borderSize, bodyHeight-borderSize).SetDirty(dirty)
 	editor := m.activeEditor().SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
 	termWidth := m.width - treeWidth - borderSize
 	termHeight := terminalHeight - borderSize
 	term := m.terminal.SetSize(termWidth, termHeight)
 
-	right := lipgloss.JoinVertical(lipgloss.Left,
+	var rightSections []string
+	if len(m.tabs) > 0 {
+		rightSections = append(rightSections, renderTabBar(m.width-treeWidth-borderSize, m.tabs, m.activeTab))
+	}
+	rightSections = append(rightSections,
 		editorStyle.Render(clampBlockWidth(editor.View(), m.width-treeWidth-borderSize)),
 		terminalStyle.Render(clampBlockWidth(term.View(), termWidth)),
 	)
+	right := lipgloss.JoinVertical(lipgloss.Left, rightSections...)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(clampBlockWidth(tree.View(), treeWidth-borderSize)), right)
 
 	sections := []string{menuBar}

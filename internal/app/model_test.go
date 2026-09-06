@@ -18,6 +18,18 @@ import (
 	"cody/internal/terminal"
 )
 
+func mustWriteAndReturn(t *testing.T, path, content string) string {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func keyRune(r rune) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+}
+
 func TestTabTogglesFocus(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, false)
@@ -783,8 +795,8 @@ func TestClickInEditorPanePositionsCursor(t *testing.T) {
 	m.focus = focusTree
 
 	// x=43 -> relX = 43 - 30(editor x0) - 1(border) = 12 -> col = 12 - editorGutterWidth(7) = 5.
-	// y=4  -> relY = 4 - 1(bodyTop) - 1(border) = 2 -> buffer line index 2 ("line2").
-	updated, _ = m.Update(tea.MouseMsg{X: 43, Y: 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	// y=5  -> relY = 5 - 1(bodyTop) - 1(tab bar, one file is open) - 1(border) = 2 -> buffer line index 2 ("line2").
+	updated, _ = m.Update(tea.MouseMsg{X: 43, Y: 5, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	m = updated.(Model)
 	if m.focus != focusEditor {
 		t.Fatal("expected clicking the editor pane to focus it")
@@ -919,5 +931,86 @@ func TestOpeningAnAlreadyOpenFileSwitchesInsteadOfDuplicating(t *testing.T) {
 	lineAfterReturn, _ := m.activeEditor().Cursor()
 	if lineAfterReturn != lineBeforeReopen {
 		t.Fatalf("got cursor line=%d, want %d — switching back to an already-open tab must preserve its state, not reload it", lineAfterReturn, lineBeforeReopen)
+	}
+}
+
+func TestClickingATabLabelSwitchesActiveTab(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	// activeTab == 1 (b.go). Tab bar is at y=1 (bodyTop, no dropdown open).
+	// Tab 0's label starts at x=0 within the editor column (x=30 on screen).
+	m.focus = focusTree
+
+	updated, _ = m.Update(tea.MouseMsg{X: 30, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if m.activeTab != 0 {
+		t.Fatalf("got activeTab=%d, want 0", m.activeTab)
+	}
+	if m.focus != focusEditor {
+		t.Fatal("expected clicking a tab label to focus the editor")
+	}
+}
+
+func TestClickingATabsCloseGlyphClosesIt(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(file, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	region := tabRegions(m.tabs)[0]
+	// closeStart is relative to the tab bar's own x0 (treeWidth); the
+	// screen column is treeWidth + closeStart.
+	updated, _ = m.Update(tea.MouseMsg{X: treeWidth + region.closeStart, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if len(m.tabs) != 0 {
+		t.Fatal("expected clicking the close glyph on a clean tab to close it")
+	}
+}
+
+func TestTreeShowsModifiedIndicatorForDirtyOpenTab(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(file, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = openAndDirtyFile(t, m, file)
+
+	view := m.View()
+	if !strings.Contains(view, "(M)") {
+		t.Fatal("expected the tree to show a modified indicator for the dirty open file")
 	}
 }
