@@ -212,7 +212,9 @@ func TestTypingInSearchDialogJumpsToMatchAndEscClosesAndClears(t *testing.T) {
 	if m.activeDialog != dialogNone {
 		t.Fatalf("got activeDialog=%v, want dialogNone after Esc", m.activeDialog)
 	}
-	if strings.Contains(m.editor.View(), "\x1b[7m") {
-		t.Fatal("expected Esc to clear the match highlight")
+	// Cursor still emits reverse-video; check for the search-specific yellow
+	// background (color 220) which disappears when the search is cleared.
+	if strings.Contains(m.editor.View(), "\x1b[48;5;220m") {
+		t.Fatal("expected Esc to clear the match highlight (yellow background)")
 	}
 }

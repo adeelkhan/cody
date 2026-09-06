@@ -14,6 +14,30 @@ import (
 	"cody/internal/highlight"
 )
 
+// ansiStrip removes ANSI CSI escape sequences from s, returning plain text.
+// Use this before content-presence checks in tests so that cursor and
+// highlighting ANSI codes don't obscure the underlying text.
+func ansiStrip(s string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && !(s[j] >= 0x40 && s[j] <= 0x7E) {
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			i = j
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
 func setupEditor(t *testing.T, content string) Model {
 	t.Helper()
 	dir := t.TempDir()
@@ -786,10 +810,11 @@ func TestViewClipsRenderedLinesToTheSetHeight(t *testing.T) {
 	if got := strings.Count(view, "\n"); got != 4 {
 		t.Fatalf("got %d newline separators, want 4 (5 lines, no trailing newline)", got)
 	}
-	if !strings.Contains(view, "line0") {
+	plain := ansiStrip(view)
+	if !strings.Contains(plain, "line0") {
 		t.Fatal("expected the first line to be visible before any scrolling")
 	}
-	if strings.Contains(view, "line5") {
+	if strings.Contains(plain, "line5") {
 		t.Fatal("expected line5 to be outside the initial 5-line viewport")
 	}
 }
@@ -802,10 +827,11 @@ func TestMovingCursorPastViewportScrollsTheEditor(t *testing.T) {
 		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	}
 	view := m.View()
-	if strings.Contains(view, "line0") {
+	plain := ansiStrip(view)
+	if strings.Contains(plain, "line0") {
 		t.Fatal("expected line0 to have scrolled out of view")
 	}
-	if !strings.Contains(view, "line7") {
+	if !strings.Contains(plain, "line7") {
 		t.Fatal("expected line7 (the cursor's line) to be visible")
 	}
 }
@@ -856,8 +882,11 @@ func TestScrollbarColumnStaysAlignedAcrossLinesOfDifferentLengths(t *testing.T) 
 	}
 	col := -1
 	for _, l := range renderedLines {
+		// Strip ANSI codes before counting rune positions so that cursor and
+		// current-line background sequences don't inflate the column index.
+		plain := ansiStrip(l)
 		idx := -1
-		for i, r := range []rune(l) {
+		for i, r := range []rune(plain) {
 			if r == '█' || r == '│' {
 				idx = i
 			}
@@ -899,7 +928,7 @@ func TestPaddingALongLineDoesNotWrapItIntoMultiplePhysicalLines(t *testing.T) {
 	if got := strings.Count(view, "\n"); got != 2 {
 		t.Fatalf("got %d newline separators, want 2 (3 lines, no trailing newline) — a row wider than the pane must not wrap", got)
 	}
-	if !strings.Contains(view, long) {
+	if !strings.Contains(ansiStrip(view), long) {
 		t.Fatal("expected the long line's full content to still be present, unwrapped")
 	}
 }
@@ -989,8 +1018,10 @@ func TestClearSearchRemovesAllMatchState(t *testing.T) {
 
 	m = m.ClearSearch()
 
-	if strings.Contains(m.View(), "\x1b[7m") {
-		t.Fatal("expected no reverse-video match highlight after ClearSearch")
+	// The cursor still emits reverse-video (\x1b[7m) — check specifically for
+	// the search-match yellow background (color 220) which is absent after clear.
+	if strings.Contains(m.View(), "\x1b[48;5;220m") {
+		t.Fatal("expected no search-match highlight (yellow background) after ClearSearch")
 	}
 	if _, status := m.FindNext(); status != "No matches" {
 		t.Fatalf("got status %q, want %q after clearing", status, "No matches")

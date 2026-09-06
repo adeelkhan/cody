@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -27,6 +28,10 @@ const highlightDebounce = 150 * time.Millisecond
 // scrollbarGutterWidth reserves one space plus one rune for the scrollbar
 // column appended to each rendered row.
 const scrollbarGutterWidth = 2
+
+// currentLineStyle highlights the active line with a faint background so it
+// stands out from surrounding content without overpowering syntax colours.
+var currentLineStyle = lipgloss.NewStyle().Background(lipgloss.Color("237"))
 
 var scrollbarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
@@ -726,8 +731,9 @@ func (m Model) View() string {
 	for idx := viewStart; idx < viewEnd; idx++ {
 		i := rows[idx]
 		line := m.buf.Lines[i]
+		isCursorLine := i == m.cursorLine
 		cursorMark := "  "
-		if i == m.cursorLine {
+		if isCursorLine {
 			cursorMark = "> "
 		}
 		rendered := line
@@ -737,6 +743,9 @@ func (m Model) View() string {
 			rendered = highlightMatch(line, match.startCol, match.endCol)
 		} else if spans, ok := m.highlightSpans[i]; ok {
 			rendered = renderHighlightedLine(line, spans)
+		}
+		if isCursorLine {
+			rendered = applyCursorAt(rendered, m.cursorCol)
 		}
 		if m.foldedStartLines[i] {
 			rendered += " ⋯"
@@ -751,7 +760,13 @@ func (m Model) View() string {
 			// tried here first, but it hard-wraps rows wider than the
 			// target width instead of leaving them alone, which silently
 			// reintroduces multi-line overflow per row — padRow only pads.
-			row = padRow(row, contentWidth) + " " + scrollbarStyle.Render(string(bar[idx-viewStart]))
+			padded := padRow(row, contentWidth)
+			if isCursorLine {
+				padded = currentLineStyle.Render(padded)
+			}
+			row = padded + " " + scrollbarStyle.Render(string(bar[idx-viewStart]))
+		} else if isCursorLine {
+			row = currentLineStyle.Render(row)
 		}
 		b.WriteString(row)
 		b.WriteString("\n")
@@ -767,6 +782,50 @@ func padRow(row string, width int) string {
 		return row + strings.Repeat(" ", pad)
 	}
 	return row
+}
+
+// applyCursorAt injects a reverse-video block cursor at rune position col
+// inside s, which may already contain ANSI escape sequences from syntax
+// highlighting. The walk skips escape sequences when counting visible runes so
+// col always refers to a position in the raw text, not the byte stream. If col
+// falls past the end of the line (empty line, or cursor at EOL), a highlighted
+// space is appended instead.
+func applyCursorAt(s string, col int) string {
+	var b strings.Builder
+	runeIdx := 0
+	inserted := false
+	i := 0
+	for i < len(s) {
+		// Skip an ANSI CSI sequence: ESC [ <params> <final-byte>
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && !(s[j] >= 0x40 && s[j] <= 0x7E) {
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			b.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if runeIdx == col {
+			b.WriteString("\x1b[7m")  // reverse video on
+			b.WriteRune(r)
+			b.WriteString("\x1b[27m") // reverse video off (leaves other attrs intact)
+			inserted = true
+		} else {
+			b.WriteRune(r)
+		}
+		runeIdx++
+		i += size
+	}
+	if !inserted {
+		// Cursor is at or past end of content (empty line or EOL position).
+		b.WriteString("\x1b[7m \x1b[27m")
+	}
+	return b.String()
 }
 
 func renderHighlightedLine(line string, spans []highlight.LineSpan) string {
