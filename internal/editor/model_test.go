@@ -1110,16 +1110,14 @@ func TestFindNextUnfoldsFoldedMatch(t *testing.T) {
 	}
 }
 
-// foldMarkOnRow extracts the fold-mark gutter column (see cursorMarkWidth /
-// foldMarkWidth) from the row at the given visible-row index, stripping any
-// ANSI codes first — both the cursor and syntax highlighting can add them,
-// and the collapsed-fold glyph ("> ") is otherwise indistinguishable from
-// the cursor mark on the same row.
+// foldMarkOnRow extracts the fold-mark gutter column (see foldMarkWidth)
+// from the row at the given visible-row index, stripping any ANSI codes
+// first — both the cursor and syntax highlighting can add them.
 func foldMarkOnRow(view string, row int) string {
 	lines := strings.Split(view, "\n")
 	plain := ansiStrip(lines[row])
 	runes := []rune(plain)
-	return string(runes[cursorMarkWidth : cursorMarkWidth+foldMarkWidth])
+	return string(runes[0:foldMarkWidth])
 }
 
 func TestFoldGutterShowsExpandedAndCollapsedGlyphs(t *testing.T) {
@@ -1167,9 +1165,9 @@ func TestClickOnFoldGutterTogglesFold(t *testing.T) {
 	}
 	m = m.SetSize(60, 10)
 
-	// Row 2 is line2, the fold's start line. x = cursorMarkWidth lands on
-	// the fold-mark column without needing to move the cursor there first.
-	m, cmd := m.HandleClick(cursorMarkWidth, 2)
+	// Row 2 is line2, the fold's start line. x=0 lands on the fold-mark
+	// column, which now starts at the very left of the gutter.
+	m, cmd := m.HandleClick(0, 2)
 	if !m.foldedStartLines[2] {
 		t.Fatal("expected clicking the fold gutter to collapse the fold")
 	}
@@ -1181,9 +1179,45 @@ func TestClickOnFoldGutterTogglesFold(t *testing.T) {
 		t.Fatalf("got %q, want %q", msg.Description, "Folded")
 	}
 
-	m, _ = m.HandleClick(cursorMarkWidth, 2)
+	m, _ = m.HandleClick(0, 2)
 	if m.foldedStartLines[2] {
 		t.Fatal("expected a second click on the fold gutter to re-expand it")
+	}
+}
+
+// Regression test: a syntax-highlighted token's own lipgloss.Render() ends
+// with a full reset (\x1b[0m), which — if nothing re-applies the current
+// line's background afterward — cuts the highlight short right after the
+// first coloured token instead of covering the full (padded) row.
+func TestCurrentLineBackgroundSurvivesInlineSyntaxHighlightReset(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.SetSize(60, 10)
+
+	view := m.View()
+	line0 := strings.Split(view, "\n")[0]
+
+	resetIdx := strings.Index(line0, "\x1b[0m")
+	if resetIdx < 0 {
+		t.Fatal("setup failed: expected a highlighted token with a reset on the cursor's line")
+	}
+	after := line0[resetIdx+len("\x1b[0m"):]
+	if !strings.HasPrefix(after, "\x1b[48;5;237m") {
+		t.Fatalf("expected the current-line background to be re-applied immediately after the reset, got %q", after)
+	}
+	if !strings.HasSuffix(line0, "\x1b[0m") {
+		t.Fatal("expected the row (including its trailing padding) to end with a final reset")
 	}
 }
 
@@ -1191,7 +1225,7 @@ func TestClickOnFoldGutterOfNonFoldableLineMovesCursorInstead(t *testing.T) {
 	m := setupEditor(t, "hello\nworld\n")
 	m = m.SetSize(40, 10)
 
-	m, cmd := m.HandleClick(cursorMarkWidth, 1)
+	m, cmd := m.HandleClick(0, 1)
 	if cmd != nil {
 		t.Fatal("expected an ordinary cursor-placing click, not a fold toggle")
 	}

@@ -782,9 +782,9 @@ func TestClickInEditorPanePositionsCursor(t *testing.T) {
 	m = updated.(Model)
 	m.focus = focusTree
 
-	// x=45 -> relX = 45 - 30(editor x0) - 1(border) = 14 -> col = 14 - editorGutterWidth(9) = 5.
+	// x=43 -> relX = 43 - 30(editor x0) - 1(border) = 12 -> col = 12 - editorGutterWidth(7) = 5.
 	// y=4  -> relY = 4 - 1(bodyTop) - 1(border) = 2 -> buffer line index 2 ("line2").
-	updated, _ = m.Update(tea.MouseMsg{X: 45, Y: 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	updated, _ = m.Update(tea.MouseMsg{X: 43, Y: 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	m = updated.(Model)
 	if m.focus != focusEditor {
 		t.Fatal("expected clicking the editor pane to focus it")

@@ -35,6 +35,25 @@ var currentLineStyle = lipgloss.NewStyle().Background(lipgloss.Color("237"))
 
 var scrollbarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
+// applyCurrentLineBackground wraps s with the current-line background,
+// re-injecting the background's own ANSI code after every embedded reset
+// (\x1b[0m) found in s. Without this, a single outer wrap only sets the
+// background once at the very start: any inline-highlighted token in s
+// ends with its own \x1b[0m (a full SGR reset, from that token's own
+// lipgloss.Style.Render() call), which clears the background too and
+// nothing re-applies it — so the highlight would visibly stop at the first
+// syntax-highlighted token instead of covering the whole (padded) row.
+func applyCurrentLineBackground(s string) string {
+	const marker = "\x00"
+	full := currentLineStyle.Render(marker)
+	open := full
+	if idx := strings.Index(full, marker); idx >= 0 {
+		open = full[:idx]
+	}
+	reinjected := strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m"+open)
+	return open + reinjected + "\x1b[0m"
+}
+
 func scheduleRehighlight(generation int) tea.Cmd {
 	return tea.Tick(highlightDebounce, func(time.Time) tea.Msg {
 		return RehighlightMsg{generation: generation}
@@ -191,16 +210,16 @@ func (m Model) Filetype() string {
 	return strings.TrimPrefix(filepath.Ext(m.buf.Path), ".")
 }
 
-// Gutter column layout: cursorMark occupies [0, cursorMarkWidth), foldMark
-// occupies [cursorMarkWidth, cursorMarkWidth+foldMarkWidth), followed by a
-// 4-digit line number and one space. editorGutterWidth is the total prefix
-// width; HandleClick uses it to translate a click's screen column into a
-// column within the line's own text, and the fold-mark range to detect a
-// click on the fold indicator itself.
+// Gutter column layout: foldMark occupies [0, foldMarkWidth), followed by a
+// 4-digit line number and one space. There is no separate cursor-mark
+// column — the current line is shown via its background instead.
+// editorGutterWidth is the total prefix width; HandleClick uses it to
+// translate a click's screen column into a column within the line's own
+// text, and the fold-mark range to detect a click on the fold indicator
+// itself.
 const (
-	cursorMarkWidth   = 2
 	foldMarkWidth     = 2
-	editorGutterWidth = 9
+	editorGutterWidth = 7
 )
 
 // HandleClick positions the cursor at the buffer line and column
@@ -225,7 +244,7 @@ func (m Model) HandleClick(x, y int) (Model, tea.Cmd) {
 		return m, nil
 	}
 	line := rows[idx]
-	if x >= cursorMarkWidth && x < cursorMarkWidth+foldMarkWidth {
+	if x >= 0 && x < foldMarkWidth {
 		if _, foldable := m.foldAt(line); foldable {
 			m.cursorLine = line
 			desc := m.toggleFold()
@@ -809,10 +828,6 @@ func (m Model) View() string {
 		i := rows[idx]
 		line := m.buf.Lines[i]
 		isCursorLine := i == m.cursorLine
-		cursorMark := "  "
-		if isCursorLine {
-			cursorMark = "> "
-		}
 		rendered := line
 		if hasSel && i >= startLine && i <= endLine {
 			rendered = highlightSelection(line, i, startLine, startCol, endLine, endCol)
@@ -835,7 +850,7 @@ func (m Model) View() string {
 		if m.foldedStartLines[i] {
 			rendered += " ⋯"
 		}
-		row := fmt.Sprintf("%s%s%4d %s", cursorMark, foldMark, i+1, rendered)
+		row := fmt.Sprintf("%s%4d %s", foldMark, i+1, rendered)
 		if clip {
 			// Pad (never wrap or truncate) to the pane's known content width
 			// so the bar lands in a fixed column at the right edge, forming
@@ -847,11 +862,11 @@ func (m Model) View() string {
 			// reintroduces multi-line overflow per row — padRow only pads.
 			padded := padRow(row, contentWidth)
 			if isCursorLine {
-				padded = currentLineStyle.Render(padded)
+				padded = applyCurrentLineBackground(padded)
 			}
 			row = padded + " " + scrollbarStyle.Render(string(bar[idx-viewStart]))
 		} else if isCursorLine {
-			row = currentLineStyle.Render(row)
+			row = applyCurrentLineBackground(row)
 		}
 		b.WriteString(row)
 		b.WriteString("\n")
