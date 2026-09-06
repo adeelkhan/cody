@@ -169,8 +169,18 @@ entry) is one registration, not three.
   invalidates a fold" already behaves in many editors.
 - **Search**: `Ctrl+F` opens a mini dialog for incremental find scoped to the
   **current buffer only** (project-wide search is out of scope for this
-  design). `Enter`/`n` jumps to the next match, `N` the previous, `Esc`
-  closes the dialog.
+  design), matching the existing file-open dialog's structure (a
+  `textinput`-driven modal, its own `dialogKind`). Matching is
+  case-insensitive substring search. The dialog's text input stays
+  focused throughout, so `Enter`/`Shift+Enter` (not the spec's originally
+  drafted `n`/`N`, which would just be typed into the query once the
+  input is live) jump to the next/previous match; typing a character
+  incrementally recomputes matches and jumps the cursor to the nearest
+  one from the current position; `Esc` closes the dialog and clears the
+  search (matches and cursor position from the search are not undone,
+  only the search UI/highlight state). Only the current match is
+  highlighted — highlighting every match simultaneously is a possible
+  future enhancement, not v1 scope.
 - **Save**: `Ctrl+S` writes buffer lines back to disk, clears the dirty flag,
   and reports the result to the status bar.
 
