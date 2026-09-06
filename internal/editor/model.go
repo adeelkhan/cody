@@ -199,6 +199,12 @@ func (m Model) HasBuffer() bool {
 	return m.buf != nil
 }
 
+// HasUnsavedChanges reports whether the current buffer has unsaved edits.
+// False when no file is loaded.
+func (m Model) HasUnsavedChanges() bool {
+	return m.buf != nil && m.buf.Dirty
+}
+
 func (m Model) Cursor() (line, col int) {
 	return m.cursorLine + 1, m.cursorCol + 1
 }

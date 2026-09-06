@@ -1262,3 +1262,34 @@ func TestScrollLinesMovesCursorDownThenUp(t *testing.T) {
 		t.Fatalf("got line=%d, want 2 after scrolling up 2", line)
 	}
 }
+
+func TestHasUnsavedChangesFalseOnFreshLoad(t *testing.T) {
+	m := setupEditor(t, "hello\n")
+	if m.HasUnsavedChanges() {
+		t.Fatal("expected a freshly loaded file to have no unsaved changes")
+	}
+}
+
+func TestHasUnsavedChangesTrueAfterEdit(t *testing.T) {
+	m := setupEditor(t, "hello\n")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if !m.HasUnsavedChanges() {
+		t.Fatal("expected an edit to mark the buffer as having unsaved changes")
+	}
+}
+
+func TestHasUnsavedChangesFalseAfterSave(t *testing.T) {
+	m := setupEditor(t, "hello\n")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if m.HasUnsavedChanges() {
+		t.Fatal("expected saving to clear unsaved changes")
+	}
+}
+
+func TestHasUnsavedChangesFalseWithNoBuffer(t *testing.T) {
+	m := New()
+	if m.HasUnsavedChanges() {
+		t.Fatal("expected no unsaved changes before any file is loaded")
+	}
+}
