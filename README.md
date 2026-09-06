@@ -4,29 +4,28 @@ A terminal-based code editor written in Go.
 
 ## Status
 
-Phase 4b (code folding) of a phased build — see
+Phase 5 (embedded terminal) of a phased build — see
 `docs/superpowers/specs/2026-09-05-cody-tui-editor-design.md` for the full
 design and `docs/superpowers/plans/` for phase-by-phase implementation plans.
 
-This phase adds folding for function/block bodies (Go, Python, JavaScript,
-TypeScript) and Markdown sections/code blocks — `Ctrl+K` toggles the fold
-at the cursor's line, collapsing it to a single summary line. Editing the
-file clears all fold state. JSON folding (and highlighting) remains
-deferred — the underlying tree-sitter library has no ready-made JSON
-grammar. It does not yet have: an embedded shell or in-buffer search —
-those land in later phases.
+This phase adds a third focus-cyclable pane that runs a real shell (`$SHELL`,
+spawned via `charmbracelet/x/xpty` and rendered using `charmbracelet/x/vt`)
+in a pseudo-terminal. The terminal pane spawns on first focus and persists
+until quit. Typing a command sends keystrokes through the real pty, and the
+shell's output is rendered directly in the pane. Terminal scrolling, resize
+support (propagated to the shell via `SIGWINCH`), and real keystroke handling
+are all included.
 
-The project tree and editor panes each scroll independently and stay
+Previous phases added: phase 4b (code folding for function/block bodies and
+Markdown sections/code blocks — `Ctrl+K` toggles), phase 4 (independent
+scrolling/clipping for tree and editor panes, scrollbars, auto-scroll to
+cursor). The project tree and editor panes each scroll independently and stay
 clipped to their box's height — opening a large file no longer pushes the
-tree pane out of view. Each pane shows a vertical scrollbar (`█`/`│`) when
-its content overflows the visible area, and auto-scrolls to keep the
-cursor/selection in view as you navigate.
+tree pane out of view.
 
 Building this phase requires a C compiler on your machine (CGO), since
 tree-sitter's grammars are C libraries — this was already noted as a
-tradeoff in the design doc's tech stack section, and matters even more
-now that folding adds a second tree-sitter dependency surface alongside
-highlighting.
+tradeoff in the design doc's tech stack section.
 
 ## Build & run
 
@@ -35,26 +34,40 @@ go build -o cody ./cmd/cody
 ./cody <path-to-a-project>
 ```
 
-## Keybindings (phase 4b)
+## Keybindings (phase 5)
 
-- `Tab` / `Shift+Tab` — switch focus between the project tree and the editor
-- Project tree: arrows or `hjkl` to navigate, `Enter`/`l` to open a file or
+- `Tab` / `Shift+Tab` — cycle focus through the three panes (project tree →
+  editor → terminal → tree, and reverse)
+- **Project tree**: arrows or `hjkl` to navigate, `Enter`/`l` to open a file or
   toggle a directory's expand/collapse state, `h` to collapse
-- Editor: arrows to move the cursor, typing inserts text, `Enter` for a
+- **Editor**: arrows to move the cursor, typing inserts text, `Enter` for a
   newline, `Backspace` to delete, `Shift+Arrow` to select text (requires a
   terminal that reports shift-modified arrow keys — most modern terminal
-  emulators do, e.g. iTerm2, Alacritty, Kitty, WezTerm)
-- `Ctrl+O` open (or click File > Open), `Ctrl+S` save
-- `Ctrl+X`/`Ctrl+C`/`Ctrl+V` cut/copy/paste (operates on the selection, or the
-  whole current line if nothing is selected)
-- `Ctrl+Z`/`Ctrl+Y` undo/redo
-- `Ctrl+K` — toggle the code fold at the cursor's current line (function/
-  block bodies, or Markdown sections/code blocks)
-- `Ctrl+Q` — quit
-- Menu bar: click `File`/`Edit` to open a dropdown, click an item to run it,
-  `Esc` or clicking elsewhere closes it; click `About` for app info; click
-  `Commands` to open the command palette (type to filter, arrows to move
-  the selection, `Enter` to run the selected command, `Esc` to close)
+  emulators do, e.g. iTerm2, Alacritty, Kitty, WezTerm), `Ctrl+K` to toggle
+  code folds (function/block bodies, or Markdown sections/code blocks)
+- **Terminal pane**: runs a real shell spawned on first focus. While the
+  terminal has focus, typing is sent directly to the shell; `Ctrl+S`/`Ctrl+X`/
+  `Ctrl+C`/`Ctrl+V`/`Ctrl+Z`/`Ctrl+Y` pass through to the shell (not the
+  editor commands they normally trigger)
+- **Global** (work from any pane):
+  - `Ctrl+O` open (or click File > Open)
+  - `Ctrl+Q` cleanly terminates the spawned shell process and quits the app
+  - Menu bar: click `File`/`Edit` to open a dropdown, click an item to run it,
+    `Esc` or clicking elsewhere closes it; click `About` for app info; click
+    `Commands` to open the command palette (type to filter, arrows to move
+    the selection, `Enter` to run the selected command, `Esc` to close)
 - Shortcuts are `Ctrl+`-based on every platform — macOS `Cmd+` shortcuts
   depend on your terminal emulator's own keybinding configuration and are not
   guaranteed to reach this app (see the About dialog)
+
+### Terminal pane v1 limitations
+
+- The spawned shell does not restart if it exits; the pane shows the last
+  rendered frame.
+- Arrow keys use normal (not application) cursor-key mode, so full-screen
+  programs that explicitly request application-mode arrow keys (some versions
+  of `vim` with certain `.vimrc` settings, `htop`, etc.) may see incorrect
+  behavior. Most modern `vim` and `less` configurations work correctly out of
+  the box.
+- Abrupt termination (closing the terminal window, `kill -9`) may leave the
+  spawned shell running orphaned — `Ctrl+Q` cleanly kills it.

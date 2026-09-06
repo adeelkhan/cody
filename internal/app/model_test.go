@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -14,6 +15,7 @@ import (
 	"cody/internal/editor"
 	"cody/internal/filetree"
 	"cody/internal/highlight"
+	"cody/internal/terminal"
 )
 
 func TestTabTogglesFocus(t *testing.T) {
@@ -610,5 +612,70 @@ func TestOpenAndQuitStayGlobalEvenWhenTerminalHasFocus(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
 	if cmd == nil {
 		t.Fatal("expected ctrl+q to still produce tea.Quit while the terminal has focus")
+	}
+}
+
+func TestTerminalPaneShowsRealShellOutputThroughTheComposedApp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real subprocess; skipped in -short mode")
+	}
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // tree -> editor
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab}) // editor -> terminal
+	m = updated.(Model)
+	if m.focus != focusTerminal {
+		t.Fatalf("got focus %v, want focusTerminal", m.focus)
+	}
+	if cmd == nil {
+		t.Fatal("expected a read-loop command once the terminal starts")
+	}
+
+	// Wait for the shell's startup prompt before typing, so the typed
+	// command reaches a live shell rather than being sent before its
+	// stdin is being read — same technique as Task 2's package-level
+	// integration test.
+	msg := cmd()
+	out, ok := msg.(terminal.OutputMsg)
+	if !ok {
+		t.Fatalf("got %T as the first message, want terminal.OutputMsg (the shell prompt)", msg)
+	}
+	updated, cmd = m.Update(out)
+	m = updated.(Model)
+
+	// Type the command through the exact same tea.KeyMsg path a real
+	// keystroke takes, one rune at a time, then Enter.
+	command := "printf 'cody-app-marker\\n'"
+	for _, r := range command {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if cmd == nil {
+			t.Fatalf("read loop stopped before the marker appeared; last view:\n%s", m.View())
+		}
+		msg := cmd()
+		out, ok := msg.(terminal.OutputMsg)
+		if !ok {
+			t.Fatalf("got %T, want terminal.OutputMsg", msg)
+		}
+		updated, cmd = m.Update(out)
+		m = updated.(Model)
+		if strings.Contains(m.View(), "cody-app-marker") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for the marker text through the composed app view; last view:\n%s", m.View())
+		}
 	}
 }
