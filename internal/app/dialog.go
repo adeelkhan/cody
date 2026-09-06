@@ -134,7 +134,7 @@ func renderSearchDialog(width, height int, ti textinput.Model, status string) st
 }
 
 func renderAboutDialog(width, height int) string {
-	content := "Cody v0.5 (Phase 5) — a terminal code editor\n\n" +
+	content := "Cody v0.7 — a terminal code editor\n\n" +
 		"Keyboard shortcuts use Ctrl+ on every platform.\n" +
 		"macOS Cmd+ shortcuts depend on your terminal emulator's own\n" +
 		"keybinding settings and are not guaranteed to reach this app.\n\n" +

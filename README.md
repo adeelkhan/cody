@@ -2,80 +2,113 @@
 
 A terminal-based code editor written in Go.
 
-## Status
+## Features
 
-Phase 6 (in-buffer search) of a phased build — see
-`docs/superpowers/specs/2026-09-05-cody-tui-editor-design.md` for the full
-design and `docs/superpowers/plans/` for phase-by-phase implementation plans.
-
-This phase adds incremental find-in-buffer search with `Ctrl+F`, supporting
-case-insensitive matching in the current buffer only. Type to jump to the nearest
-match, use `Enter`/`Shift+Enter` to cycle through next/previous matches, and
-`Esc` to close and clear the search. The search is performed live as you type,
-with the first match highlighted as the cursor position.
-
-Previous phases added: phase 5 (embedded terminal with real shell pane),
-phase 4b (code folding for function/block bodies and Markdown sections/code blocks —
-`Ctrl+K` toggles), phase 4 (independent scrolling/clipping for tree and editor
-panes, scrollbars, auto-scroll to cursor). The project tree and editor panes each
-scroll independently and stay clipped to their box's height — opening a large file
-no longer pushes the tree pane out of view.
-
-Building this phase requires a C compiler on your machine (CGO), since
-tree-sitter's grammars are C libraries — this was already noted as a
-tradeoff in the design doc's tech stack section.
+- **Project file tree** — lazy directory walker with icons (Nerd Font by default,
+  plain Unicode fallback via `--no-nerd-font`); navigate with arrow keys or `hjkl`
+- **Syntax highlighting** — tree-sitter-backed, supporting Go, Python, JavaScript,
+  TypeScript, and Markdown; debounced re-highlight on edit
+- **Code folding** — fold/unfold function bodies, block statements, and Markdown
+  sections (`Ctrl+K`); search automatically unfolds a folded match
+- **Incremental search** — `Ctrl+F` opens an in-buffer find dialog; case-insensitive
+  substring matching, live match-jump as you type, `Enter`/`Shift+Enter` cycle
+  next/previous, `Esc` closes
+- **Embedded terminal** — real shell pane (spawned on first focus); full
+  interactivity: `vim`, `htop`, `ssh`, `Ctrl+C`, etc.
+- **Edit operations** — `Ctrl+X`/`Ctrl+C`/`Ctrl+V` cut/copy/paste (internal
+  clipboard), `Ctrl+Z`/`Ctrl+Y` undo/redo, `Shift+Arrow` selection
+- **Command palette** — click `Commands` in the menu bar (or use the palette
+  shortcut) to search and run any registered command
+- **File open dialog** — `Ctrl+O` to open a file by path (relative to project root
+  or absolute)
+- **Status bar** — project name, most-recent command, cursor position, file type
 
 ## Build & run
 
+Requires a C compiler (CGO) for tree-sitter grammar bindings.
+
 ```bash
 go build -o cody ./cmd/cody
-./cody <path-to-a-project>
+./cody <path-to-project>          # opens the project tree at the given path
+./cody                            # defaults to the current directory
+./cody --no-nerd-font <path>      # plain Unicode icons (for terminals without Nerd Fonts)
 ```
 
-## Keybindings (phase 6)
+## Keybindings
 
-- `Tab` / `Shift+Tab` — cycle focus through the three panes (project tree →
-  editor → terminal → tree, and reverse)
-- `Ctrl+F` — open incremental find (case-insensitive, current buffer
-  only); type to jump to the nearest match, `Enter`/`Shift+Enter` for
-  next/previous match, `Esc` closes and clears the search (requires a
-  terminal that reports `Shift+Enter` distinctly from plain `Enter` —
-  the same class of terminal-capability caveat this project already
-  documents for `Shift+Arrow` selection; most modern terminal emulators
-  handle it, e.g. iTerm2, Alacritty, Kitty, WezTerm)
-- **Project tree**: arrows or `hjkl` to navigate, `Enter`/`l` to open a file or
-  toggle a directory's expand/collapse state, `h` to collapse
-- **Editor**: arrows to move the cursor, typing inserts text, `Enter` for a
-  newline, `Backspace` to delete, `Shift+Arrow` to select text (requires a
-  terminal that reports shift-modified arrow keys — most modern terminal
-  emulators do, e.g. iTerm2, Alacritty, Kitty, WezTerm), `Ctrl+K` to toggle
-  code folds (function/block bodies, or Markdown sections/code blocks)
-- **Terminal pane**: runs a real shell spawned on first focus. While the
-  terminal has focus, typing is sent directly to the shell; `Ctrl+S`/`Ctrl+X`/
-  `Ctrl+C`/`Ctrl+V`/`Ctrl+Z`/`Ctrl+Y` pass through to the shell (not the
-  editor commands they normally trigger)
-- **Global** (work from any pane):
-  - `Ctrl+O` open (or click File > Open)
-  - `Ctrl+Q` cleanly terminates the spawned shell process and quits the app
-  - Menu bar: click `File`/`Edit` to open a dropdown, click an item to run it,
-    `Esc` or clicking elsewhere closes it; click `About` for app info; click
-    `Commands` to open the command palette (type to filter, arrows to move
-    the selection, `Enter` to run the selected command, `Esc` to close)
-- Shortcuts are `Ctrl+`-based on every platform — macOS `Cmd+` shortcuts
-  depend on your terminal emulator's own keybinding configuration and are not
-  guaranteed to reach this app (see the About dialog)
+### Global (any pane)
 
-### Terminal pane v1 limitations
+| Key | Action |
+|-----|--------|
+| `Tab` / `Shift+Tab` | Cycle focus: tree → editor → terminal → tree (and reverse) |
+| `Ctrl+O` | Open file by path |
+| `Ctrl+F` | Find in current buffer |
+| `Ctrl+Q` | Quit (cleanly terminates the spawned shell) |
 
-- The spawned shell does not restart if it exits; the pane shows the last
-  rendered frame.
-- Arrow keys use normal (not application) cursor-key mode, so full-screen
-  programs that explicitly request application-mode arrow keys (some versions
-  of `vim` with certain `.vimrc` settings, `htop`, etc.) may see incorrect
-  behavior. Most modern `vim` and `less` configurations work correctly out of
-  the box.
-- Abrupt termination (closing the terminal window, `kill -9`) may leave the
-  spawned shell running orphaned — `Ctrl+Q` cleanly kills it.
-- `Tab`/`Shift+Tab` are reserved globally for cycling pane focus, so a literal
-  Tab keypress never reaches the shell — no tab-completion in the terminal
-  pane.
+### Project tree
+
+| Key | Action |
+|-----|--------|
+| `↑`/`↓` or `j`/`k` | Move selection |
+| `Enter` or `l` | Expand directory / open file (shifts focus to editor) |
+| `h` | Collapse directory |
+
+### Editor
+
+| Key | Action |
+|-----|--------|
+| Arrow keys | Move cursor |
+| `Home` / `End` | Start / end of line |
+| `Page Up` / `Page Down` | Scroll by page |
+| `Shift+Arrow` | Extend selection¹ |
+| `Backspace` / `Delete` | Delete character |
+| `Enter` | Insert newline |
+| `Ctrl+S` | Save file |
+| `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | Cut / Copy / Paste (internal clipboard) |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
+| `Ctrl+K` | Toggle code fold at cursor line |
+
+### Find dialog (`Ctrl+F`)
+
+| Key | Action |
+|-----|--------|
+| Type | Jump to nearest match (case-insensitive) |
+| `Enter` | Next match |
+| `Shift+Enter` | Previous match¹ |
+| `Esc` | Close dialog and clear search highlight |
+
+### Terminal pane
+
+While the terminal pane has focus, keystrokes go directly to the shell.
+`Ctrl+S`/`Ctrl+X`/`Ctrl+C`/`Ctrl+V`/`Ctrl+Z`/`Ctrl+Y`/`Ctrl+K`/`Ctrl+F` pass
+through to the shell. Only `Ctrl+O` and `Ctrl+Q` stay global.
+
+### Menu bar
+
+Click `File` or `Edit` to open a dropdown; click an item to run it; `Esc` or
+click elsewhere to close. Click `Commands` to open the command palette — type to
+filter, arrows to select, `Enter` to run, `Esc` to close. Click `About` for
+version info and the macOS shortcut note.
+
+---
+
+¹ Requires a terminal emulator that reports shift-modified keys as distinct escape
+sequences (iTerm2, Alacritty, Kitty, WezTerm, and most other modern emulators).
+
+## macOS note
+
+macOS terminal emulators intercept `Cmd+C`/`Cmd+V`/`Cmd+X`/`Cmd+Z` before they
+reach any app running inside them. Use `Ctrl+` bindings — they work on every
+platform. If you want `Cmd+` bindings, reconfigure your terminal emulator to
+send the matching escape sequence.
+
+## Terminal pane limitations
+
+- Tab completion is unavailable — `Tab` / `Shift+Tab` are reserved globally for
+  pane-focus cycling and never reach the shell.
+- Arrow keys use normal cursor-key mode; full-screen programs that require
+  application-mode arrows may see incorrect behavior (most `vim` / `less`
+  configs work fine out of the box).
+- The shell does not restart if it exits; the pane shows the last rendered frame.
+- Abrupt process termination (e.g. `kill -9` on the parent) may leave the spawned
+  shell orphaned. `Ctrl+Q` always cleans up correctly.
