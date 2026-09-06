@@ -63,6 +63,10 @@ func commandByName(commands []Command, name string) (Command, bool) {
 	return Command{}, false
 }
 
+var menuBarStyle = lipgloss.NewStyle().
+	Background(lipgloss.Color("236")).
+	Foreground(lipgloss.Color("252"))
+
 func renderMenuBar(width int, openMenu string) string {
 	var parts []string
 	for _, l := range menuLabels() {
@@ -72,7 +76,7 @@ func renderMenuBar(width int, openMenu string) string {
 		}
 		parts = append(parts, text)
 	}
-	return lipgloss.NewStyle().Width(width).Render(strings.Join(parts, "  "))
+	return menuBarStyle.Width(width).Render(strings.Join(parts, "  "))
 }
 
 func renderDropdown(menu string, commands []Command) string {

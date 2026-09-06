@@ -3,17 +3,17 @@ package filetree
 import "path/filepath"
 
 var nerdFontIcons = map[string]string{
-	".go":   "",
-	".py":   "",
-	".js":   "",
-	".ts":   "",
-	".json": "",
-	".md":   "",
+	".go":   "",
+	".py":   "",
+	".js":   "",
+	".ts":   "",
+	".json": "",
+	".md":   "",
 }
 
 const (
-	nerdFontDir  = ""
-	nerdFontFile = ""
+	nerdFontDir  = ""
+	nerdFontFile = ""
 	fallbackDir  = "+"
 	fallbackFile = "-"
 )
