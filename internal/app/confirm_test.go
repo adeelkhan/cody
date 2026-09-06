@@ -81,6 +81,52 @@ func TestCloseTabReassignsActiveTabCorrectly(t *testing.T) {
 	}
 }
 
+func TestCloseTabReassignsActiveTabWhenLaterTabExists(t *testing.T) {
+	dir := t.TempDir()
+	var files []string
+	for _, name := range []string{"a.go", "b.go", "c.go"} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("package p"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, p)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		updated, _ := m.Update(filetree.FileOpenedMsg{Path: f})
+		m = updated.(Model)
+	}
+	// 3 tabs open (a.go, b.go, c.go), activeTab == 2 (c.go).
+
+	// Re-open b.go: openOrSwitch switches to its existing tab rather than
+	// duplicating it, moving activeTab to 1 (b.go), which has a tab after
+	// it (c.go at index 2).
+	updated, _ := m.Update(filetree.FileOpenedMsg{Path: files[1]})
+	m = updated.(Model)
+	if m.activeTab != 1 {
+		t.Fatalf("got activeTab=%d, want 1 after switching back to b.go", m.activeTab)
+	}
+	if len(m.tabs) != 3 {
+		t.Fatalf("got %d tabs, want 3 (no duplicate from re-opening b.go)", len(m.tabs))
+	}
+
+	// Closing the active tab (b.go) that has a later tab (c.go) shifts
+	// that later tab left into the closed slot, so activeTab stays at 1.
+	m, _ = m.closeTab(1)
+	if m.activeTab != 1 {
+		t.Fatalf("got activeTab=%d, want 1 after closing the active tab with a later tab present", m.activeTab)
+	}
+	if len(m.tabs) != 2 {
+		t.Fatalf("got %d tabs, want 2", len(m.tabs))
+	}
+	if m.tabs[m.activeTab].path != files[2] {
+		t.Fatalf("got active tab path=%q, want %q (c.go)", m.tabs[m.activeTab].path, files[2])
+	}
+}
+
 func TestCloseTabOnDirtyTabOpensConfirmDialog(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "a.go")
