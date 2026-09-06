@@ -10,6 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"cody/internal/highlight"
 )
 
 func setupEditor(t *testing.T, content string) Model {
@@ -1036,5 +1038,41 @@ func TestLoadFileResetsSearchState(t *testing.T) {
 
 	if _, status := m.FindNext(); status != "No matches" {
 		t.Fatalf("got status %q, want %q after LoadFile", status, "No matches")
+	}
+}
+
+func TestFindNextUnfoldsFoldedMatch(t *testing.T) {
+	m := New()
+	m.buf = &Buffer{Lines: []string{
+		"func hello() {",
+		"    target here",
+		"    more stuff",
+		"}",
+		"func other() {}",
+	}}
+	m.folds = []highlight.LineRange{{StartLine: 0, EndLine: 3}}
+	m.foldedStartLines = map[int]bool{0: true}
+
+	if !m.isLineHidden(1) {
+		t.Fatal("precondition: line 1 should be hidden before search")
+	}
+
+	m = m.StartSearch()
+	var status string
+	m, status = m.SetSearchQuery("target")
+	if status == "No matches" {
+		t.Fatalf("expected a match, got %q", status)
+	}
+
+	m, _ = m.FindNext()
+
+	if m.cursorLine != 1 {
+		t.Errorf("cursorLine = %d, want 1", m.cursorLine)
+	}
+	if m.isLineHidden(m.cursorLine) {
+		t.Error("cursor is still on a hidden line after FindNext — fold was not opened")
+	}
+	if m.foldedStartLines[0] {
+		t.Error("fold starting at line 0 should be unfolded after FindNext jumped into it")
 	}
 }

@@ -414,6 +414,18 @@ func (m *Model) toggleFold() string {
 	return "Unfolded"
 }
 
+// unfoldContaining removes the fold that hides line, if any.
+// Called by jumpToCurrentMatch so a search result on a hidden line
+// always becomes visible rather than leaving the cursor on an unseen line.
+func (m *Model) unfoldContaining(line int) {
+	for _, f := range m.folds {
+		if m.foldedStartLines[f.StartLine] && line > f.StartLine && line <= f.EndLine {
+			m.foldedStartLines[f.StartLine] = false
+			return
+		}
+	}
+}
+
 // StartSearch enters search mode: clears any previous match state so a
 // fresh query starts from empty.
 func (m Model) StartSearch() Model {
@@ -486,6 +498,7 @@ func (m *Model) jumpToCurrentMatch() {
 	match := m.searchMatches[m.searchIndex]
 	m.cursorLine = match.line
 	m.cursorCol = match.startCol
+	m.unfoldContaining(m.cursorLine)
 	m.ensureCursorVisible()
 }
 
