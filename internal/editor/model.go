@@ -191,21 +191,30 @@ func (m Model) Filetype() string {
 	return strings.TrimPrefix(filepath.Ext(m.buf.Path), ".")
 }
 
-// editorGutterWidth is the fixed-width prefix rendered before each line's
-// content: cursorMark (2) + foldMark (2) + a 4-digit line number + one
-// space. HandleClick uses this to translate a click's screen column into a
-// column within the line's own text.
-const editorGutterWidth = 9
+// Gutter column layout: cursorMark occupies [0, cursorMarkWidth), foldMark
+// occupies [cursorMarkWidth, cursorMarkWidth+foldMarkWidth), followed by a
+// 4-digit line number and one space. editorGutterWidth is the total prefix
+// width; HandleClick uses it to translate a click's screen column into a
+// column within the line's own text, and the fold-mark range to detect a
+// click on the fold indicator itself.
+const (
+	cursorMarkWidth   = 2
+	foldMarkWidth     = 2
+	editorGutterWidth = 9
+)
 
 // HandleClick positions the cursor at the buffer line and column
 // corresponding to a click at (x, y), where x and y are relative to the
 // pane's own content area (border already excluded by the caller). y is an
 // index into the currently visible (non-folded) rows, matching what View()
-// rendered. A click past the last visible row, or before any file is
-// loaded, is a no-op.
-func (m Model) HandleClick(x, y int) Model {
+// rendered. A click on the fold-mark column of a foldable line toggles that
+// fold instead — same as pressing ctrl+k on it — and its returned command
+// carries the fold status message, matching ctrl+k's own status feedback.
+// A click past the last visible row, or before any file is loaded, is a
+// no-op.
+func (m Model) HandleClick(x, y int) (Model, tea.Cmd) {
 	if m.buf == nil {
-		return m
+		return m, nil
 	}
 	rows := m.visibleLines()
 	idx := y
@@ -213,10 +222,19 @@ func (m Model) HandleClick(x, y int) Model {
 		idx = m.scrollOffset + y
 	}
 	if idx < 0 || idx >= len(rows) {
-		return m
+		return m, nil
+	}
+	line := rows[idx]
+	if x >= cursorMarkWidth && x < cursorMarkWidth+foldMarkWidth {
+		if _, foldable := m.foldAt(line); foldable {
+			m.cursorLine = line
+			desc := m.toggleFold()
+			m.ensureCursorVisible()
+			return m, func() tea.Msg { return CommandExecutedMsg{Description: desc} }
+		}
 	}
 	m.selecting = false
-	m.cursorLine = rows[idx]
+	m.cursorLine = line
 	col := x - editorGutterWidth
 	if col < 0 {
 		col = 0
@@ -227,7 +245,7 @@ func (m Model) HandleClick(x, y int) Model {
 	}
 	m.cursorCol = col
 	m.ensureCursorVisible()
-	return m
+	return m, nil
 }
 
 // ScrollLines moves the cursor n visible lines (negative scrolls up,
@@ -809,9 +827,9 @@ func (m Model) View() string {
 		foldMark := "  "
 		if _, foldable := m.foldAt(i); foldable {
 			if m.foldedStartLines[i] {
-				foldMark = "▸ "
+				foldMark = "> "
 			} else {
-				foldMark = "▾ "
+				foldMark = "v "
 			}
 		}
 		if m.foldedStartLines[i] {

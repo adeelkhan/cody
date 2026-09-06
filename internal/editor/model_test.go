@@ -1110,6 +1110,18 @@ func TestFindNextUnfoldsFoldedMatch(t *testing.T) {
 	}
 }
 
+// foldMarkOnRow extracts the fold-mark gutter column (see cursorMarkWidth /
+// foldMarkWidth) from the row at the given visible-row index, stripping any
+// ANSI codes first — both the cursor and syntax highlighting can add them,
+// and the collapsed-fold glyph ("> ") is otherwise indistinguishable from
+// the cursor mark on the same row.
+func foldMarkOnRow(view string, row int) string {
+	lines := strings.Split(view, "\n")
+	plain := ansiStrip(lines[row])
+	runes := []rune(plain)
+	return string(runes[cursorMarkWidth : cursorMarkWidth+foldMarkWidth])
+}
+
 func TestFoldGutterShowsExpandedAndCollapsedGlyphs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "main.go")
@@ -1124,8 +1136,11 @@ func TestFoldGutterShowsExpandedAndCollapsedGlyphs(t *testing.T) {
 	}
 	m = m.SetSize(60, 10)
 
-	if !strings.Contains(m.View(), "▾") {
-		t.Fatal("expected an expanded-fold glyph before folding")
+	// Row 2 is line2 ("func add(...) int {"), the fold's start line — always
+	// visible regardless of fold state, since folding only hides the lines
+	// strictly after the start line.
+	if got := foldMarkOnRow(m.View(), 2); got != "v " {
+		t.Fatalf("got fold mark %q, want \"v \" (expanded) before folding", got)
 	}
 
 	for i := 0; i < 2; i++ {
@@ -1133,8 +1148,56 @@ func TestFoldGutterShowsExpandedAndCollapsedGlyphs(t *testing.T) {
 	}
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 
-	if !strings.Contains(m.View(), "▸") {
-		t.Fatal("expected a collapsed-fold glyph after folding")
+	if got := foldMarkOnRow(m.View(), 2); got != "> " {
+		t.Fatalf("got fold mark %q, want \"> \" (collapsed) after folding", got)
+	}
+}
+
+func TestClickOnFoldGutterTogglesFold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	src := "package main\n\nfunc add(a int, b int) int {\n\treturn a + 42\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.SetSize(60, 10)
+
+	// Row 2 is line2, the fold's start line. x = cursorMarkWidth lands on
+	// the fold-mark column without needing to move the cursor there first.
+	m, cmd := m.HandleClick(cursorMarkWidth, 2)
+	if !m.foldedStartLines[2] {
+		t.Fatal("expected clicking the fold gutter to collapse the fold")
+	}
+	if cmd == nil {
+		t.Fatal("expected a status message, matching ctrl+k's own feedback")
+	}
+	msg := cmd().(CommandExecutedMsg)
+	if msg.Description != "Folded" {
+		t.Fatalf("got %q, want %q", msg.Description, "Folded")
+	}
+
+	m, _ = m.HandleClick(cursorMarkWidth, 2)
+	if m.foldedStartLines[2] {
+		t.Fatal("expected a second click on the fold gutter to re-expand it")
+	}
+}
+
+func TestClickOnFoldGutterOfNonFoldableLineMovesCursorInstead(t *testing.T) {
+	m := setupEditor(t, "hello\nworld\n")
+	m = m.SetSize(40, 10)
+
+	m, cmd := m.HandleClick(cursorMarkWidth, 1)
+	if cmd != nil {
+		t.Fatal("expected an ordinary cursor-placing click, not a fold toggle")
+	}
+	line, _ := m.Cursor()
+	if line != 2 {
+		t.Fatalf("got line=%d, want 2 (row 1's buffer line)", line)
 	}
 }
 
@@ -1143,7 +1206,7 @@ func TestHandleClickPositionsCursorInEditor(t *testing.T) {
 	m = m.SetSize(40, 10)
 
 	// x = editorGutterWidth + 2 lands on column 2 of the clicked line.
-	m = m.HandleClick(editorGutterWidth+2, 1)
+	m, _ = m.HandleClick(editorGutterWidth+2, 1)
 
 	line, col := m.Cursor()
 	if line != 2 || col != 3 {

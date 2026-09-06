@@ -197,12 +197,20 @@ func (m Model) handleClick(x, y int) (tea.Model, tea.Cmd) {
 	}
 	if m.openMenu != "" {
 		label, ok := findLabel(m.openMenu)
-		if !ok || x < label.startCol || x >= label.startCol+dropdownWidth {
+		if !ok {
+			m.openMenu = ""
+			return m, nil
+		}
+		dropdown := renderDropdown(m.openMenu, m.commands)
+		width := lipgloss.Width(dropdown)
+		if x < label.startCol || x >= label.startCol+width {
 			m.openMenu = ""
 			return m, nil
 		}
 		items := menuItemsFor(m.openMenu)
-		row := y - 1
+		// -menuBarHeight skips the menu bar row the dropdown opens below;
+		// -dropdownBorderSize skips its own top border row.
+		row := y - menuBarHeight - dropdownBorderSize
 		if row < 0 || row >= len(items) {
 			m.openMenu = ""
 			return m, nil
@@ -264,8 +272,9 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 		m.focus = focusEditor
 		relX := x - editorRect.x0 - 1
 		relY := y - editorRect.y0 - 1
-		m.editor = m.editor.HandleClick(relX, relY)
-		return m, nil
+		var cmd tea.Cmd
+		m.editor, cmd = m.editor.HandleClick(relX, relY)
+		return m, cmd
 	case terminalRect.contains(x, y):
 		m.focus = focusTerminal
 		return m.maybeStartTerminal()

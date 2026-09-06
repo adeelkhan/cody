@@ -7,7 +7,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const dropdownWidth = 20
+// dropdownBorderSize is the thickness of renderDropdown's border on each
+// edge. handleClick's dropdown hit-test uses it to translate a click's
+// screen row into an index into the dropdown's own item list.
+const dropdownBorderSize = 1
 
 type menuLabel struct {
 	name     string
@@ -79,6 +82,15 @@ func renderMenuBar(width int, openMenu string) string {
 	return menuBarStyle.Width(width).Render(strings.Join(parts, "  "))
 }
 
+// dropdownStyle gives an open dropdown a visible border so it reads as a
+// popup dropping out of the menu bar, rather than plain text floating below
+// it. The border color matches the focused-pane border for a consistent
+// "this is the active thing" visual language.
+var dropdownStyle = lipgloss.NewStyle().
+	Border(lipgloss.NormalBorder()).
+	BorderForeground(focusedBorderColor).
+	Padding(0, 1)
+
 func renderDropdown(menu string, commands []Command) string {
 	items := menuItemsFor(menu)
 	var lines []string
@@ -93,8 +105,5 @@ func renderDropdown(menu string, commands []Command) string {
 	if label, ok := findLabel(menu); ok {
 		startCol = label.startCol
 	}
-	return lipgloss.NewStyle().
-		Padding(0, 1).
-		MarginLeft(startCol).
-		Render(strings.Join(lines, "\n"))
+	return dropdownStyle.MarginLeft(startCol).Render(strings.Join(lines, "\n"))
 }

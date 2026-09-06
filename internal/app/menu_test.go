@@ -117,12 +117,12 @@ func TestClickDropdownItemRunsCommand(t *testing.T) {
 	m = updated.(Model)
 	m, _ = m.clickMenuLabel("Edit")
 	// "Edit" starts at column 6 ("File" is 0-3, then a 2-space gap), so the
-	// click's x must fall in Edit's column band [6, 6+dropdownWidth) or the
-	// hit-test in handleClick will treat it as an outside click and close
-	// the dropdown without running anything. Edit's items are Cut, Paste,
-	// Copy, Save (rows 1-4 below the menu bar); row 4 ("Save") is at y=4
-	// (row = y-1 = 3, items[3] = "Save").
-	updated, cmd := m.handleClick(6, 4)
+	// click's x must fall within the dropdown's own rendered width (border
+	// included) starting at column 6, or the hit-test in handleClick will
+	// treat it as an outside click and close the dropdown without running
+	// anything. Edit's items are Cut, Paste, Copy, Save; row = y -
+	// menuBarHeight(1) - dropdownBorderSize(1), so row 3 ("Save") is at y=5.
+	updated, cmd := m.handleClick(6, 5)
 	m = updated.(Model)
 	if m.openMenu != "" {
 		t.Fatal("expected the dropdown to close after a click")
@@ -137,8 +137,9 @@ func TestRenderDropdownAlignsWithHitTestModel(t *testing.T) {
 	dropdown := renderDropdown("Edit", commands)
 	lines := strings.Split(dropdown, "\n")
 	items := menuItemsFor("Edit")
-	if len(lines) != len(items) {
-		t.Fatalf("got %d rendered lines, want %d (one per item, no border rows)", len(lines), len(items))
+	// One row per item, plus a top and bottom border row.
+	if len(lines) != len(items)+2*dropdownBorderSize {
+		t.Fatalf("got %d rendered lines, want %d (%d items + border rows)", len(lines), len(items)+2*dropdownBorderSize, len(items))
 	}
 	label, ok := findLabel("Edit")
 	if !ok {
