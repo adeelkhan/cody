@@ -548,3 +548,107 @@ func TestClickWhileEditingCancelsWithoutActing(t *testing.T) {
 		t.Fatal("expected no command — a click during edit mode only cancels, it doesn't also activate the clicked row")
 	}
 }
+
+func TestHandleRightClickOnFileTargetsParentDirWithRename(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	target := m.flat[0].node.Path
+	m = m.HandleRightClick(0)
+
+	if m.contextMenu == nil {
+		t.Fatal("expected a context menu to open")
+	}
+	if m.contextMenu.targetPath != target {
+		t.Fatalf("got targetPath=%q, want %q", m.contextMenu.targetPath, target)
+	}
+	if m.contextMenu.targetDir != filepath.Dir(target) {
+		t.Fatalf("got targetDir=%q, want %q", m.contextMenu.targetDir, filepath.Dir(target))
+	}
+	items := m.contextMenu.items()
+	if len(items) != 3 || items[2] != "Rename" {
+		t.Fatalf("got items=%v, want [New File, New Folder, Rename]", items)
+	}
+}
+
+func TestHandleRightClickOnDirTargetsItself(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.HandleRightClick(0)
+	if m.contextMenu.targetDir != filepath.Join(dir, "sub") {
+		t.Fatalf("got targetDir=%q, want %q", m.contextMenu.targetDir, filepath.Join(dir, "sub"))
+	}
+}
+
+func TestHandleRightClickOnEmptySpaceTargetsRootWithNoRename(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.HandleRightClick(50) // past the last row
+
+	if m.contextMenu.targetPath != "" {
+		t.Fatalf("got targetPath=%q, want empty (no specific row clicked)", m.contextMenu.targetPath)
+	}
+	items := m.contextMenu.items()
+	if len(items) != 2 {
+		t.Fatalf("got items=%v, want [New File, New Folder] (no Rename)", items)
+	}
+}
+
+func TestClickingNewFileMenuItemStartsCreate(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.HandleRightClick(50) // empty space -> targets root, items = [New File, New Folder]
+
+	m, _ = m.HandleClick(0) // row 0 of the menu = "New File"
+
+	if m.mode != editCreatingFile {
+		t.Fatalf("got mode=%v, want editCreatingFile", m.mode)
+	}
+	if m.contextMenu != nil {
+		t.Fatal("expected the context menu to close once an item is selected")
+	}
+}
+
+func TestClickingOutsideMenuClosesItWithoutAction(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.HandleRightClick(50)
+
+	m, cmd := m.HandleClick(10) // well past the 2 menu rows
+
+	if m.contextMenu != nil {
+		t.Fatal("expected clicking outside the menu to close it")
+	}
+	if m.mode != editNone {
+		t.Fatal("expected no edit mode to start from an outside click")
+	}
+	if cmd != nil {
+		t.Fatal("expected no command from dismissing the menu")
+	}
+}
+
+func TestEscClosesContextMenu(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.HandleRightClick(50)
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if m.contextMenu != nil {
+		t.Fatal("expected Esc to close the context menu")
+	}
+}
+
+func TestRightClickWhileEditingCancelsTheEditFirst(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.startRename(m.flat[0].node.Path)
+
+	m = m.HandleRightClick(50)
+
+	if m.mode != editNone {
+		t.Fatal("expected the in-progress rename to be cancelled by a right-click elsewhere")
+	}
+	if m.contextMenu == nil {
+		t.Fatal("expected a new context menu to open")
+	}
+}

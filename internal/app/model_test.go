@@ -1064,3 +1064,37 @@ func TestTreeShowsModifiedIndicatorForDirtyOpenTab(t *testing.T) {
 		t.Fatal("expected the tree to show a modified indicator for the dirty open file")
 	}
 }
+
+func TestRightClickInTreeOpensContextMenu(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.focus = focusEditor
+
+	updated, _ = m.Update(tea.MouseMsg{X: 5, Y: 5, Button: tea.MouseButtonRight, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if m.focus != focusTree {
+		t.Fatal("expected right-clicking the tree to focus it")
+	}
+}
+
+func TestFileTreeErrorMsgSetsRecentCommand(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(filetree.FileTreeErrorMsg{Message: "boom"})
+	m = updated.(Model)
+	if m.recentCommand != "boom" {
+		t.Fatalf("got recentCommand=%q, want %q", m.recentCommand, "boom")
+	}
+}

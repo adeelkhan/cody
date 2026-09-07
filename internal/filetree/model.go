@@ -32,6 +32,24 @@ const (
 	editRenaming
 )
 
+// contextMenuState describes an open right-click menu: where new items
+// would be created, and (if a specific row was clicked) which one, since
+// that's what enables the Rename option.
+type contextMenuState struct {
+	targetDir  string
+	targetPath string // "" if the right-click hit empty space
+}
+
+// items lists this menu's actions in render/click order — Rename only
+// appears when a specific row was right-clicked.
+func (cm *contextMenuState) items() []string {
+	items := []string{"New File", "New Folder"}
+	if cm.targetPath != "" {
+		items = append(items, "Rename")
+	}
+	return items
+}
+
 // scrollbarGutterWidth reserves one space plus one rune for the scrollbar
 // column appended to each rendered row.
 const scrollbarGutterWidth = 2
@@ -54,9 +72,10 @@ type Model struct {
 	scrollOffset int
 	dirty        map[string]bool
 
-	mode       editMode
-	editInput  textinput.Model
-	editTarget string // create: target directory; rename: the node's current path
+	mode        editMode
+	editInput   textinput.Model
+	editTarget  string // create: target directory; rename: the node's current path
+	contextMenu *contextMenuState
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -191,6 +210,46 @@ func (m Model) startRename(path string) Model {
 	return m
 }
 
+// HandleRightClick opens a context menu targeting row y (relative to the
+// pane's content area, same convention as HandleClick) — the directory
+// itself if it's a directory, its parent if a file, or the tree's root if y
+// lands past the last row (empty space). Replaces any already-open menu,
+// and cancels an in-progress create/rename first (a right-click clearly
+// signals "do something else now" rather than leaving a stale phantom row
+// or edit state behind).
+func (m Model) HandleRightClick(y int) Model {
+	if m.mode != editNone {
+		m.mode = editNone
+		m.rebuildFlat()
+	}
+	idx := m.scrollOffset + y
+	if idx < 0 || idx >= len(m.flat) || m.flat[idx].node == nil {
+		m.contextMenu = &contextMenuState{targetDir: m.root.Path}
+		return m
+	}
+	n := m.flat[idx].node
+	targetDir := n.Path
+	if n.Type != NodeDir {
+		targetDir = filepath.Dir(n.Path)
+	}
+	m.contextMenu = &contextMenuState{targetDir: targetDir, targetPath: n.Path}
+	return m
+}
+
+func (m Model) selectContextMenuItem(label string) Model {
+	cm := m.contextMenu
+	m.contextMenu = nil
+	switch label {
+	case "New File":
+		return m.startCreate(cm.targetDir, false)
+	case "New Folder":
+		return m.startCreate(cm.targetDir, true)
+	case "Rename":
+		return m.startRename(cm.targetPath)
+	}
+	return m
+}
+
 // indexOfPhantom returns the flat-list index of the "typing a new name"
 // row, or -1 if there isn't one.
 func (m Model) indexOfPhantom() int {
@@ -269,6 +328,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if m.mode != editNone {
 		return m.updateEditInput(keyMsg)
 	}
+	if m.contextMenu != nil {
+		if keyMsg.String() == "esc" {
+			m.contextMenu = nil
+		}
+		return m, nil
+	}
 	var cmd tea.Cmd
 	switch keyMsg.String() {
 	case "up", "k":
@@ -331,6 +396,14 @@ func (m *Model) collapseCurrent() {
 // collapsing a directory, or opening a file. A click past the last item is
 // a no-op.
 func (m Model) HandleClick(y int) (Model, tea.Cmd) {
+	if m.contextMenu != nil {
+		items := m.contextMenu.items()
+		if y >= 0 && y < len(items) {
+			return m.selectContextMenuItem(items[y]), nil
+		}
+		m.contextMenu = nil
+		return m, nil
+	}
 	if m.mode != editNone {
 		m.mode = editNone
 		m.rebuildFlat()
@@ -388,7 +461,15 @@ func (m Model) activateCurrent() (Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	clip := m.height > 0
+	var menuItems []string
+	if m.contextMenu != nil {
+		menuItems = m.contextMenu.items()
+	}
+	realHeight := m.height
+	if realHeight > 0 {
+		realHeight -= len(menuItems)
+	}
+	clip := realHeight > 0
 	viewStart, viewEnd := 0, len(m.flat)
 	if clip {
 		viewStart = m.scrollOffset
@@ -398,7 +479,7 @@ func (m Model) View() string {
 		if viewStart > len(m.flat) {
 			viewStart = len(m.flat)
 		}
-		viewEnd = viewStart + m.height
+		viewEnd = viewStart + realHeight
 		if viewEnd > len(m.flat) {
 			viewEnd = len(m.flat)
 		}
@@ -415,6 +496,9 @@ func (m Model) View() string {
 	}
 
 	var b strings.Builder
+	for _, label := range menuItems {
+		b.WriteString("  [" + label + "]\n")
+	}
 	for idx := viewStart; idx < viewEnd; idx++ {
 		item := m.flat[idx]
 		prefix := strings.Repeat("  ", item.depth)

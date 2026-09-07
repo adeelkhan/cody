@@ -227,6 +227,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Button {
 		case tea.MouseButtonLeft:
 			return m.handleClick(msg.X, msg.Y)
+		case tea.MouseButtonRight:
+			return m.handleRightClick(msg.X, msg.Y)
 		case tea.MouseButtonWheelUp:
 			return m.handleWheel(msg.X, msg.Y, -mouseWheelLines)
 		case tea.MouseButtonWheelDown:
@@ -267,6 +269,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = updated
 		m.focus = focusEditor
 		m.recentCommand = fmt.Sprintf("Opened %s", filepath.Base(msg.Path))
+		return m, nil
+	case filetree.FileTreeErrorMsg:
+		m.recentCommand = msg.Message
 		return m, nil
 	case editor.CommandExecutedMsg:
 		m.recentCommand = msg.Description
@@ -397,6 +402,24 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 		m.focus = focusTerminal
 		return m.maybeStartTerminal()
 	}
+	return m, nil
+}
+
+// handleRightClick opens the tree's context menu when the click landed in
+// the tree pane; a no-op everywhere else (there's nothing to right-click
+// in the editor/terminal panes in this pass) or while a dialog/dropdown is
+// open.
+func (m Model) handleRightClick(x, y int) (tea.Model, tea.Cmd) {
+	if m.activeDialog != dialogNone || m.openMenu != "" {
+		return m, nil
+	}
+	treeRect, _, _, _ := m.paneLayout()
+	if !treeRect.contains(x, y) {
+		return m, nil
+	}
+	m.focus = focusTree
+	relY := y - treeRect.y0 - 1
+	m.tree = m.tree.HandleRightClick(relY)
 	return m, nil
 }
 
