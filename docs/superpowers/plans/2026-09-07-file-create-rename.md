@@ -1586,6 +1586,9 @@ func TestRightClickInTreeOpensContextMenu(t *testing.T) {
 	if m.focus != focusTree {
 		t.Fatal("expected right-clicking the tree to focus it")
 	}
+	if !strings.Contains(m.tree.View(), "New File") {
+		t.Fatal("expected right-clicking the tree to open a context menu showing New File")
+	}
 }
 
 func TestFileTreeErrorMsgSetsRecentCommand(t *testing.T) {
@@ -1765,11 +1768,19 @@ func (m Model) View() string {
 	if m.contextMenu != nil {
 		menuItems = m.contextMenu.items()
 	}
-	realHeight := m.height
-	if realHeight > 0 {
-		realHeight -= len(menuItems)
+	// clip depends only on whether SetSize has ever been called — the
+	// pane's pre-existing "unbounded rendering" escape valve, unrelated to
+	// whether the menu happens to consume every available row. Basing clip
+	// on realHeight (as an earlier version of this code did) conflated the
+	// two: once the menu's own row count met or exceeded m.height,
+	// realHeight went to 0, clip went false, and the pane fell back to
+	// fully unbounded rendering — dumping the entire (potentially huge)
+	// flat list below the menu instead of correctly showing zero tree rows.
+	clip := m.height > 0
+	realHeight := m.height - len(menuItems)
+	if realHeight < 0 {
+		realHeight = 0
 	}
-	clip := realHeight > 0
 	viewStart, viewEnd := 0, len(m.flat)
 	if clip {
 		viewStart = m.scrollOffset
@@ -1782,6 +1793,9 @@ func (m Model) View() string {
 		viewEnd = viewStart + realHeight
 		if viewEnd > len(m.flat) {
 			viewEnd = len(m.flat)
+		}
+		if viewEnd < viewStart {
+			viewEnd = viewStart
 		}
 	}
 
