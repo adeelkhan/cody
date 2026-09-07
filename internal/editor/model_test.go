@@ -1293,3 +1293,75 @@ func TestHasUnsavedChangesFalseWithNoBuffer(t *testing.T) {
 		t.Fatal("expected no unsaved changes before any file is loaded")
 	}
 }
+
+func TestNewBlankBufferStartsEmptyAndUntitled(t *testing.T) {
+	m := New().NewBlankBuffer()
+	if !m.HasBuffer() {
+		t.Fatal("expected a buffer to be loaded")
+	}
+	if !m.IsUntitled() {
+		t.Fatal("expected a freshly created blank buffer to be untitled")
+	}
+	if m.HasUnsavedChanges() {
+		t.Fatal("expected a freshly created blank buffer to have no unsaved changes yet")
+	}
+}
+
+func TestIsUntitledFalseAfterLoadingARealFile(t *testing.T) {
+	m := setupEditor(t, "hello\n")
+	if m.IsUntitled() {
+		t.Fatal("expected a file loaded via LoadFile to not be untitled")
+	}
+}
+
+func TestIsUntitledFalseWithNoBuffer(t *testing.T) {
+	m := New()
+	if m.IsUntitled() {
+		t.Fatal("expected no buffer loaded to not be untitled")
+	}
+}
+
+func TestSaveAsWritesContentAttachesPathAndClearsDirty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "new.go")
+	m := New().NewBlankBuffer()
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("package main")})
+
+	m, err := m.SaveAs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.IsUntitled() {
+		t.Fatal("expected SaveAs to clear untitled status")
+	}
+	if m.HasUnsavedChanges() {
+		t.Fatal("expected SaveAs to clear dirty status")
+	}
+	if m.Filetype() != "go" {
+		t.Fatalf("got filetype %q, want %q", m.Filetype(), "go")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "package main" {
+		t.Fatalf("got %q, want %q", string(data), "package main")
+	}
+}
+
+func TestSaveAsPicksUpSyntaxHighlighting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "new.go")
+	m := New().NewBlankBuffer()
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("package main")})
+	m, err := m.SaveAs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.SetSize(60, 10)
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	if !strings.Contains(m.View(), "\x1b[") {
+		t.Fatal("expected syntax highlighting to be active after SaveAs picks up the .go extension")
+	}
+}

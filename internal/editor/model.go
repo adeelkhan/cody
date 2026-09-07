@@ -205,6 +205,57 @@ func (m Model) HasUnsavedChanges() bool {
 	return m.buf != nil && m.buf.Dirty
 }
 
+// NewBlankBuffer starts editing a fresh, empty, pathless buffer — created
+// by Ctrl+N, not tied to any file on disk until SaveAs gives it one.
+func (m Model) NewBlankBuffer() Model {
+	m.buf = &Buffer{Lines: []string{""}}
+	m.cursorLine = 0
+	m.cursorCol = 0
+	m.selecting = false
+	m.selAnchorLine = 0
+	m.selAnchorCol = 0
+	m.undoStack = nil
+	m.redoStack = nil
+	m.highlighter = nil
+	m.highlightSpans = nil
+	m.folder = nil
+	m.folds = nil
+	m.foldedStartLines = nil
+	m.scrollOffset = 0
+	m.searchMatches = nil
+	m.searchIndex = -1
+	return m
+}
+
+// IsUntitled reports whether the buffer has never been saved to a path
+// (created via NewBlankBuffer rather than LoadFile). Saving it requires a
+// path from the user first — see SaveAs. False when no buffer is loaded.
+func (m Model) IsUntitled() bool {
+	return m.buf != nil && m.buf.Path == ""
+}
+
+// SaveAs writes the buffer's current content to path for the first time,
+// attaching that path to the buffer, then runs the same language-detection
+// LoadFile does at load time — an untitled buffer has no extension to
+// detect a language from until now.
+func (m Model) SaveAs(path string) (Model, error) {
+	m.buf.Path = path
+	if err := m.buf.Save(); err != nil {
+		return m, err
+	}
+	if lang, ok := highlight.LanguageForPath(path); ok {
+		if h, err := highlight.New(lang); err == nil {
+			m.highlighter = h
+		}
+		if f, err := highlight.NewFolder(lang); err == nil {
+			m.folder = f
+		}
+	}
+	m.rehighlight()
+	m.refold()
+	return m, nil
+}
+
 func (m Model) Cursor() (line, col int) {
 	return m.cursorLine + 1, m.cursorCol + 1
 }
