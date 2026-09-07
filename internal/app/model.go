@@ -23,11 +23,11 @@ const (
 )
 
 const (
-	treeWidth       = 30
-	statusBarHeight = 1
-	menuBarHeight   = 1
-	terminalHeight  = 8
-	borderSize      = 2 // lipgloss.NormalBorder adds 1 cell on each side
+	defaultTreeWidth      = 30
+	statusBarHeight       = 1
+	menuBarHeight         = 1
+	defaultTerminalHeight = 8
+	borderSize            = 2 // lipgloss.NormalBorder adds 1 cell on each side
 
 	// mouseWheelLines is how many rows a single wheel notch scrolls.
 	mouseWheelLines = 3
@@ -40,11 +40,28 @@ const (
 	// pre-existing overflow class and not something tabBarHeight itself
 	// can fix.
 	tabBarHeight = 1
+
+	// Pane-resize clamps: how small a dragged pane may shrink to, and how
+	// much room the pane on the other side of the drag must always keep.
+	minTreeWidth      = 15
+	minEditorWidth    = 20
+	minEditorHeight   = 3
+	minTerminalHeight = 3
 )
 
 var (
 	focusedBorderColor   = lipgloss.Color("205")
 	unfocusedBorderColor = lipgloss.Color("240")
+)
+
+// resizeKind identifies which pane boundary a mouse drag is currently
+// resizing, if any.
+type resizeKind int
+
+const (
+	resizeNone resizeKind = iota
+	resizeTree
+	resizeTerminal
 )
 
 // tab is one open file: its absolute path (the key used to detect an
@@ -67,6 +84,16 @@ type Model struct {
 	commands      []Command
 	rootPath      string
 	openMenu      string
+
+	// treeWidth and terminalHeight are the tree and terminal panes' current
+	// on-screen sizes (border included) — mutable, unlike their
+	// defaultTreeWidth/defaultTerminalHeight starting values, because the
+	// user can drag either pane's boundary to resize it. resizeDrag tracks
+	// an in-progress drag between the mouse-down that started it and the
+	// button-release that ends it.
+	treeWidth      int
+	terminalHeight int
+	resizeDrag     resizeKind
 	activeDialog  dialogKind
 	fileOpenInput textinput.Model
 	fileOpenError string
@@ -95,13 +122,15 @@ func New(rootPath string, nerdFont bool) (Model, error) {
 		return Model{}, err
 	}
 	return Model{
-		tree:        tree,
-		activeTab:   -1,
-		terminal:    terminal.New(),
-		focus:       focusTree,
-		projectName: filepath.Base(absPath),
-		rootPath:    absPath,
-		commands:    buildCommands(),
+		tree:           tree,
+		activeTab:      -1,
+		terminal:       terminal.New(),
+		focus:          focusTree,
+		projectName:    filepath.Base(absPath),
+		rootPath:       absPath,
+		commands:       buildCommands(),
+		treeWidth:      defaultTreeWidth,
+		terminalHeight: defaultTerminalHeight,
 	}, nil
 }
 
@@ -152,8 +181,8 @@ func (m Model) tabBarH() int {
 // non-empty, so the tab bar is about to appear.
 func (m Model) newTabEditorSize() (width, height int) {
 	paneHeight := m.height - menuBarHeight - statusBarHeight
-	editorHeight := paneHeight - terminalHeight - tabBarHeight
-	return m.width - treeWidth - borderSize, editorHeight - borderSize
+	editorHeight := paneHeight - m.terminalHeight - tabBarHeight
+	return m.width - m.treeWidth - borderSize, editorHeight - borderSize
 }
 
 // openOrSwitch opens path in a new tab, or switches to its existing tab if
@@ -190,10 +219,15 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if sz, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = sz.Width, sz.Height
+		// Re-clamp any pane sizes the user dragged away from their
+		// defaults: a resize the user made at the old window size could
+		// now overflow (or invert) the new one.
+		m.treeWidth = m.clampTreeWidth(m.treeWidth)
+		m.terminalHeight = m.clampTerminalHeight(m.terminalHeight)
 		paneHeight := m.height - menuBarHeight - statusBarHeight
-		editorHeight := paneHeight - terminalHeight - m.tabBarH()
-		editorW := m.width - treeWidth - borderSize
-		m.tree = m.tree.SetSize(treeWidth-borderSize, paneHeight-borderSize)
+		editorHeight := paneHeight - m.terminalHeight - m.tabBarH()
+		editorW := m.width - m.treeWidth - borderSize
+		m.tree = m.tree.SetSize(m.treeWidth-borderSize, paneHeight-borderSize)
 		// Size every open tab's editor, not just the active one: a
 		// background tab left at its stale (or zero) size would treat
 		// itself as "unbounded" once switched to or clicked in, breaking
@@ -201,7 +235,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i := range m.tabs {
 			m.tabs[i].editor = m.tabs[i].editor.SetSize(editorW, editorHeight-borderSize)
 		}
-		m.terminal = m.terminal.SetSize(editorW, terminalHeight-borderSize)
+		m.terminal = m.terminal.SetSize(editorW, m.terminalHeight-borderSize)
 		return m, nil
 	}
 	if _, ok := msg.(editor.RehighlightMsg); ok {
@@ -239,18 +273,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
-		if msg.Action != tea.MouseActionPress {
+		switch msg.Action {
+		case tea.MouseActionMotion:
+			if m.resizeDrag != resizeNone {
+				return m.applyResizeDrag(msg.X, msg.Y), nil
+			}
 			return m, nil
-		}
-		switch msg.Button {
-		case tea.MouseButtonLeft:
-			return m.handleClick(msg.X, msg.Y)
-		case tea.MouseButtonRight:
-			return m.handleRightClick(msg.X, msg.Y)
-		case tea.MouseButtonWheelUp:
-			return m.handleWheel(msg.X, msg.Y, -mouseWheelLines)
-		case tea.MouseButtonWheelDown:
-			return m.handleWheel(msg.X, msg.Y, mouseWheelLines)
+		case tea.MouseActionRelease:
+			m.resizeDrag = resizeNone
+			return m, nil
+		case tea.MouseActionPress:
+			switch msg.Button {
+			case tea.MouseButtonLeft:
+				if updated, handled := m.beginResizeDrag(msg.X, msg.Y); handled {
+					return updated, nil
+				}
+				return m.handleClick(msg.X, msg.Y)
+			case tea.MouseButtonRight:
+				return m.handleRightClick(msg.X, msg.Y)
+			case tea.MouseButtonWheelUp:
+				return m.handleWheel(msg.X, msg.Y, -mouseWheelLines)
+			case tea.MouseButtonWheelDown:
+				return m.handleWheel(msg.X, msg.Y, mouseWheelLines)
+			}
 		}
 		return m, nil
 	case tea.KeyMsg:
@@ -374,12 +419,12 @@ func (m Model) paneLayout() (tree, tabBar, editorR, terminalR rect) {
 	bodyTop := menuBarHeight + dropdownHeight
 	bodyHeight := paneHeight - dropdownHeight
 	tabBarH := m.tabBarH()
-	editorHeight := bodyHeight - terminalHeight - tabBarH
+	editorHeight := bodyHeight - m.terminalHeight - tabBarH
 
-	tree = rect{0, bodyTop, treeWidth, bodyTop + bodyHeight}
-	tabBar = rect{treeWidth, bodyTop, m.width, bodyTop + tabBarH}
-	editorR = rect{treeWidth, bodyTop + tabBarH, m.width, bodyTop + tabBarH + editorHeight}
-	terminalR = rect{treeWidth, bodyTop + tabBarH + editorHeight, m.width, bodyTop + bodyHeight}
+	tree = rect{0, bodyTop, m.treeWidth, bodyTop + bodyHeight}
+	tabBar = rect{m.treeWidth, bodyTop, m.width, bodyTop + tabBarH}
+	editorR = rect{m.treeWidth, bodyTop + tabBarH, m.width, bodyTop + tabBarH + editorHeight}
+	terminalR = rect{m.treeWidth, bodyTop + tabBarH + editorHeight, m.width, bodyTop + bodyHeight}
 	return
 }
 
@@ -458,6 +503,76 @@ func (m Model) handleWheel(x, y, delta int) (tea.Model, tea.Cmd) {
 		m = m.setActiveEditor(m.activeEditor().ScrollLines(delta))
 	}
 	return m, nil
+}
+
+// beginResizeDrag starts a pane-resize drag if (x, y) landed on a draggable
+// pane boundary: the tree pane's right border (drag horizontally to resize
+// its width) or the row between the editor and terminal panes (drag
+// vertically to resize the terminal's height). Checked ahead of the normal
+// click routing so grabbing a border resizes instead of also selecting a
+// tree row or placing the cursor. Reports handled=false everywhere else, or
+// while a dialog/dropdown is open — resizing then would move panes the
+// user can't see change.
+func (m Model) beginResizeDrag(x, y int) (Model, bool) {
+	if m.activeDialog != dialogNone || m.openMenu != "" {
+		return m, false
+	}
+	treeRect, _, editorRect, terminalRect := m.paneLayout()
+	if x == treeRect.x1-1 && y >= treeRect.y0 && y < treeRect.y1 {
+		m.resizeDrag = resizeTree
+		return m, true
+	}
+	onHorizontalBoundary := y == editorRect.y1-1 || y == terminalRect.y0
+	if onHorizontalBoundary && x >= editorRect.x0 && x < editorRect.x1 {
+		m.resizeDrag = resizeTerminal
+		return m, true
+	}
+	return m, false
+}
+
+// applyResizeDrag updates the pane boundary named by m.resizeDrag to track
+// the pointer at (x, y), clamped so neither pane can be dragged into (or
+// past) collapse. A no-op if no drag is in progress.
+func (m Model) applyResizeDrag(x, y int) Model {
+	switch m.resizeDrag {
+	case resizeTree:
+		m.treeWidth = m.clampTreeWidth(x + 1)
+	case resizeTerminal:
+		_, _, _, terminalRect := m.paneLayout()
+		m.terminalHeight = m.clampTerminalHeight(terminalRect.y1 - y)
+	}
+	return m
+}
+
+// clampTreeWidth keeps a candidate tree-pane width within [minTreeWidth,
+// m.width-minEditorWidth] so dragging can never collapse either the tree
+// pane or the editor/terminal pane beside it.
+func (m Model) clampTreeWidth(w int) int {
+	return clampInt(w, minTreeWidth, m.width-minEditorWidth)
+}
+
+// clampTerminalHeight keeps a candidate terminal-pane height within
+// [minTerminalHeight, paneHeight-tabBarH-minEditorHeight] so dragging can
+// never collapse either the terminal pane or the editor pane above it.
+func (m Model) clampTerminalHeight(h int) int {
+	paneHeight := m.height - menuBarHeight - statusBarHeight
+	max := paneHeight - m.tabBarH() - minEditorHeight
+	return clampInt(h, minTerminalHeight, max)
+}
+
+// clampInt restricts v to [lo, hi]. If hi < lo (the available space is
+// smaller than the minimum itself — an already-degenerate window), lo wins.
+func clampInt(v, lo, hi int) int {
+	if hi < lo {
+		return lo
+	}
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func (m Model) clickMenuLabel(name string) (Model, tea.Cmd) {
@@ -555,7 +670,7 @@ func (m Model) View() string {
 
 	bodyHeight := paneHeight - dropdownHeight
 	tabBarH := m.tabBarH()
-	editorHeight := bodyHeight - terminalHeight - tabBarH
+	editorHeight := bodyHeight - m.terminalHeight - tabBarH
 
 	treeBorderColor := unfocusedBorderColor
 	editorBorderColor := unfocusedBorderColor
@@ -572,18 +687,18 @@ func (m Model) View() string {
 	treeStyle := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(treeBorderColor).
-		Width(treeWidth - borderSize).
+		Width(m.treeWidth - borderSize).
 		Height(bodyHeight - borderSize)
 	editorStyle := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(editorBorderColor).
-		Width(m.width - treeWidth - borderSize).
+		Width(m.width - m.treeWidth - borderSize).
 		Height(editorHeight - borderSize)
 	terminalStyle := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(terminalBorderColor).
-		Width(m.width - treeWidth - borderSize).
-		Height(terminalHeight - borderSize)
+		Width(m.width - m.treeWidth - borderSize).
+		Height(m.terminalHeight - borderSize)
 
 	// Re-derive each pane's exact interior height right before rendering
 	// (on this value-receiver copy of m, so nothing here mutates the real
@@ -597,29 +712,29 @@ func (m Model) View() string {
 			dirty[t.path] = true
 		}
 	}
-	tree := m.tree.SetSize(treeWidth-borderSize, bodyHeight-borderSize).SetDirty(dirty)
-	editor := m.activeEditor().SetSize(m.width-treeWidth-borderSize, editorHeight-borderSize)
-	termWidth := m.width - treeWidth - borderSize
-	termHeight := terminalHeight - borderSize
+	tree := m.tree.SetSize(m.treeWidth-borderSize, bodyHeight-borderSize).SetDirty(dirty)
+	editor := m.activeEditor().SetSize(m.width-m.treeWidth-borderSize, editorHeight-borderSize)
+	termWidth := m.width - m.treeWidth - borderSize
+	termHeight := m.terminalHeight - borderSize
 	term := m.terminal.SetSize(termWidth, termHeight)
 
 	var rightSections []string
 	if len(m.tabs) > 0 {
 		// The tab bar has no border of its own, so it must be rendered at
 		// the same on-screen width as tabBarRect (paneLayout): m.width -
-		// treeWidth. editorStyle's content Width(m.width-treeWidth-
+		// m.treeWidth. editorStyle's content Width(m.width-m.treeWidth-
 		// borderSize) looks narrower only because its border adds
 		// borderSize back on screen — the tab bar has no border to add,
 		// so it must use the full span directly instead of subtracting
 		// borderSize again.
-		rightSections = append(rightSections, renderTabBar(m.width-treeWidth, m.tabs, m.activeTab))
+		rightSections = append(rightSections, renderTabBar(m.width-m.treeWidth, m.tabs, m.activeTab))
 	}
 	rightSections = append(rightSections,
-		editorStyle.Render(clampBlockWidth(editor.View(), m.width-treeWidth-borderSize)),
+		editorStyle.Render(clampBlockWidth(editor.View(), m.width-m.treeWidth-borderSize)),
 		terminalStyle.Render(clampBlockWidth(term.View(), termWidth)),
 	)
 	right := lipgloss.JoinVertical(lipgloss.Left, rightSections...)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(clampBlockWidth(tree.View(), treeWidth-borderSize)), right)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(clampBlockWidth(tree.View(), m.treeWidth-borderSize)), right)
 
 	sections := []string{menuBar}
 	if dropdown != "" {

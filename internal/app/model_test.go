@@ -1035,9 +1035,9 @@ func TestClickingATabsCloseGlyphClosesIt(t *testing.T) {
 	m = updated.(Model)
 
 	region := tabRegions(m.tabs, 200)[0]
-	// closeStart is relative to the tab bar's own x0 (treeWidth); the
-	// screen column is treeWidth + closeStart.
-	updated, _ = m.Update(tea.MouseMsg{X: treeWidth + region.closeStart, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	// closeStart is relative to the tab bar's own x0 (defaultTreeWidth); the
+	// screen column is defaultTreeWidth + closeStart.
+	updated, _ = m.Update(tea.MouseMsg{X: defaultTreeWidth + region.closeStart, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	m = updated.(Model)
 
 	if len(m.tabs) != 0 {
@@ -1119,5 +1119,156 @@ func TestNewWithRelativePathResolvesTreeRootToAbsolute(t *testing.T) {
 	}
 	if m.tree.SelectedDir() != m.rootPath {
 		t.Fatalf("got tree root %q, want it to match m.rootPath %q — a relative launch path must resolve consistently for both", m.tree.SelectedDir(), m.rootPath)
+	}
+}
+
+// setupSizedApp returns a Model sized to 80x24 with no tabs open, so the
+// pane geometry (tree/editor/terminal rects) matches the values worked out
+// in the resize tests below.
+func setupSizedApp(t *testing.T) Model {
+	t.Helper()
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	return updated.(Model)
+}
+
+func press(x, y int) tea.MouseMsg {
+	return tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+}
+
+func drag(x, y int) tea.MouseMsg {
+	return tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion}
+}
+
+func release(x, y int) tea.MouseMsg {
+	return tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonNone, Action: tea.MouseActionRelease}
+}
+
+func TestDraggingTreeBorderResizesTreeWidth(t *testing.T) {
+	m := setupSizedApp(t)
+	if m.treeWidth != defaultTreeWidth {
+		t.Fatalf("got treeWidth=%d, want default %d", m.treeWidth, defaultTreeWidth)
+	}
+
+	updated, _ := m.Update(press(defaultTreeWidth-1, 5)) // tree's right border column
+	m = updated.(Model)
+	if m.resizeDrag != resizeTree {
+		t.Fatalf("got resizeDrag=%v, want resizeTree", m.resizeDrag)
+	}
+
+	updated, _ = m.Update(drag(50, 5))
+	m = updated.(Model)
+	if m.treeWidth != 51 {
+		t.Fatalf("got treeWidth=%d, want 51 (border tracks the pointer)", m.treeWidth)
+	}
+
+	updated, _ = m.Update(release(50, 5))
+	m = updated.(Model)
+	if m.resizeDrag != resizeNone {
+		t.Fatal("expected release to end the drag")
+	}
+	if m.treeWidth != 51 {
+		t.Fatalf("got treeWidth=%d, want it to stay at 51 after release", m.treeWidth)
+	}
+}
+
+func TestDraggingTreeBorderClampsToMinAndMaxWidth(t *testing.T) {
+	m := setupSizedApp(t)
+	updated, _ := m.Update(press(defaultTreeWidth-1, 5))
+	m = updated.(Model)
+
+	updated, _ = m.Update(drag(2, 5))
+	m = updated.(Model)
+	if m.treeWidth != minTreeWidth {
+		t.Fatalf("got treeWidth=%d, want it clamped to minTreeWidth=%d", m.treeWidth, minTreeWidth)
+	}
+
+	updated, _ = m.Update(drag(75, 5))
+	m = updated.(Model)
+	want := m.width - minEditorWidth
+	if m.treeWidth != want {
+		t.Fatalf("got treeWidth=%d, want it clamped to width-minEditorWidth=%d", m.treeWidth, want)
+	}
+}
+
+func TestDraggingEditorTerminalBoundaryResizesTerminalHeight(t *testing.T) {
+	m := setupSizedApp(t)
+	if m.terminalHeight != defaultTerminalHeight {
+		t.Fatalf("got terminalHeight=%d, want default %d", m.terminalHeight, defaultTerminalHeight)
+	}
+	_, _, _, terminalRect := m.paneLayout()
+
+	updated, _ := m.Update(press(40, terminalRect.y0)) // terminal's own top border row
+	m = updated.(Model)
+	if m.resizeDrag != resizeTerminal {
+		t.Fatalf("got resizeDrag=%v, want resizeTerminal", m.resizeDrag)
+	}
+
+	// Drag up: terminal grows (its top boundary moves toward the tab bar).
+	updated, _ = m.Update(drag(40, terminalRect.y0-5))
+	m = updated.(Model)
+	wantHeight := terminalRect.y1 - (terminalRect.y0 - 5)
+	if m.terminalHeight != wantHeight {
+		t.Fatalf("got terminalHeight=%d, want %d", m.terminalHeight, wantHeight)
+	}
+
+	updated, _ = m.Update(release(40, terminalRect.y0-5))
+	m = updated.(Model)
+	if m.resizeDrag != resizeNone {
+		t.Fatal("expected release to end the drag")
+	}
+	if m.terminalHeight != wantHeight {
+		t.Fatalf("got terminalHeight=%d, want it to stay at %d after release", m.terminalHeight, wantHeight)
+	}
+}
+
+func TestDraggingEditorTerminalBoundaryClampsToMinAndMaxHeight(t *testing.T) {
+	m := setupSizedApp(t)
+	_, _, _, terminalRect := m.paneLayout()
+
+	updated, _ := m.Update(press(40, terminalRect.y0))
+	m = updated.(Model)
+
+	// Drag far up: terminal would grow past what leaves the editor its
+	// minimum height, so it must clamp instead.
+	updated, _ = m.Update(drag(40, 1))
+	m = updated.(Model)
+	paneHeight := m.height - menuBarHeight - statusBarHeight
+	wantMax := paneHeight - m.tabBarH() - minEditorHeight
+	if m.terminalHeight != wantMax {
+		t.Fatalf("got terminalHeight=%d, want it clamped to %d", m.terminalHeight, wantMax)
+	}
+
+	// Drag far down: terminal shrinks to its minimum.
+	updated, _ = m.Update(drag(40, 22))
+	m = updated.(Model)
+	if m.terminalHeight != minTerminalHeight {
+		t.Fatalf("got terminalHeight=%d, want it clamped to minTerminalHeight=%d", m.terminalHeight, minTerminalHeight)
+	}
+}
+
+func TestClickingInsideTreePaneDoesNotStartAResize(t *testing.T) {
+	m := setupSizedApp(t)
+	updated, _ := m.Update(press(10, 5)) // well inside the tree pane, not on its border
+	m = updated.(Model)
+	if m.resizeDrag != resizeNone {
+		t.Fatal("expected a click inside the pane (not on its border) to not start a resize")
+	}
+	if m.focus != focusTree {
+		t.Fatal("expected the click to still be routed to the tree pane as a normal click")
+	}
+}
+
+func TestResizeDragDoesNotStartWhileADialogIsOpen(t *testing.T) {
+	m := setupSizedApp(t)
+	m.activeDialog = dialogAbout
+	updated, _ := m.Update(press(defaultTreeWidth-1, 5))
+	m = updated.(Model)
+	if m.resizeDrag != resizeNone {
+		t.Fatal("expected a border press to not start a resize while a dialog is open")
 	}
 }

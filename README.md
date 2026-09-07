@@ -23,6 +23,8 @@ A terminal-based code editor written in Go.
   shortcut) to search and run any registered command
 - **File open dialog** — `Ctrl+O` to open a file by path (relative to project root
   or absolute)
+- **Resizable panes** — drag the tree's right border to resize it, or the boundary
+  between the editor and terminal to resize the terminal
 - **Status bar** — project name, most-recent command, cursor position, file type
 
 ## Build & run
@@ -47,6 +49,11 @@ go build -o cody ./cmd/cody
 | `Ctrl+O` | Open file by path |
 | `Ctrl+F` | Find in current buffer |
 | `Ctrl+Q` | Quit (cleanly terminates the spawned shell; prompts if any tab has unsaved changes) |
+
+Click and drag the tree pane's right border to resize it, or the boundary
+between the editor and terminal to resize the terminal. Both panes have a
+minimum size, and the editor/tree on the other side of the drag always keeps
+enough room to stay usable.
 
 ### Project tree
 
