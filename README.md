@@ -2,6 +2,8 @@
 
 A terminal-based code editor written in Go.
 
+![Cody screenshot](cody.png)
+
 ## Features
 
 - **Project file tree** — lazy directory walker with icons (Nerd Font by default,
