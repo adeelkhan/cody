@@ -1084,6 +1084,9 @@ func TestRightClickInTreeOpensContextMenu(t *testing.T) {
 	if m.focus != focusTree {
 		t.Fatal("expected right-clicking the tree to focus it")
 	}
+	if !strings.Contains(m.tree.View(), "New File") {
+		t.Fatal("expected right-clicking the tree to open a context menu showing New File")
+	}
 }
 
 func TestFileTreeErrorMsgSetsRecentCommand(t *testing.T) {

@@ -639,6 +639,23 @@ func TestEscClosesContextMenu(t *testing.T) {
 	}
 }
 
+func TestViewClipsToZeroTreeRowsWhenMenuFillsThePane(t *testing.T) {
+	m := setupModelWithNFiles(t, 20)
+	m = m.SetSize(40, 3)
+	m = m.HandleRightClick(0) // targets a file row -> menu has 3 items (New File, New Folder, Rename)
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d rendered lines, want 3 (menu fills the entire 3-row pane, leaving zero tree rows) — got view:\n%s", len(lines), view)
+	}
+	for _, l := range lines {
+		if !strings.Contains(l, "[") {
+			t.Fatalf("expected every rendered line to be a menu row when the menu consumes the whole pane, got %q", l)
+		}
+	}
+}
+
 func TestRightClickWhileEditingCancelsTheEditFirst(t *testing.T) {
 	m := setupModelWithNFiles(t, 3)
 	m = m.startRename(m.flat[0].node.Path)

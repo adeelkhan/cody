@@ -465,11 +465,11 @@ func (m Model) View() string {
 	if m.contextMenu != nil {
 		menuItems = m.contextMenu.items()
 	}
-	realHeight := m.height
-	if realHeight > 0 {
-		realHeight -= len(menuItems)
+	clip := m.height > 0
+	realHeight := m.height - len(menuItems)
+	if realHeight < 0 {
+		realHeight = 0
 	}
-	clip := realHeight > 0
 	viewStart, viewEnd := 0, len(m.flat)
 	if clip {
 		viewStart = m.scrollOffset
@@ -482,6 +482,9 @@ func (m Model) View() string {
 		viewEnd = viewStart + realHeight
 		if viewEnd > len(m.flat) {
 			viewEnd = len(m.flat)
+		}
+		if viewEnd < viewStart {
+			viewEnd = viewStart
 		}
 	}
 
