@@ -86,11 +86,11 @@ type Model struct {
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
-	tree, err := filetree.New(rootPath, nerdFont)
+	absPath, err := filepath.Abs(rootPath)
 	if err != nil {
 		return Model{}, err
 	}
-	absPath, err := filepath.Abs(rootPath)
+	tree, err := filetree.New(absPath, nerdFont)
 	if err != nil {
 		return Model{}, err
 	}
@@ -593,7 +593,7 @@ func (m Model) View() string {
 	// since Lip Gloss's Height() only sets a minimum, never a max.
 	dirty := map[string]bool{}
 	for _, t := range m.tabs {
-		if t.editor.HasUnsavedChanges() {
+		if t.path != "" && t.editor.HasUnsavedChanges() {
 			dirty[t.path] = true
 		}
 	}

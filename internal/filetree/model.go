@@ -103,6 +103,16 @@ func (m *Model) rebuildFlat() {
 		}
 	}
 	walk(m.root, 0)
+	// rebuildFlat can shrink the list (e.g. cancelling an in-progress
+	// create removes the phantom row m.cursor was parked on) — clamp here,
+	// the one place the list length actually changes, rather than at every
+	// caller.
+	if m.cursor >= len(m.flat) {
+		m.cursor = len(m.flat) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
 }
 
 func (m Model) SetSize(width, height int) Model {
@@ -218,21 +228,38 @@ func (m Model) startRename(path string) Model {
 // signals "do something else now" rather than leaving a stale phantom row
 // or edit state behind).
 func (m Model) HandleRightClick(y int) Model {
+	// Resolve the target against the state that was actually on screen for
+	// this click — before any mutation the click itself triggers. If a
+	// menu is already open, its rows were drawn above the tree content, so
+	// their count must be subtracted from y first. If an edit is in
+	// progress, its phantom row is still part of m.flat right now; capture
+	// the target *Node pointer before cancelling (which rebuilds m.flat
+	// and would invalidate a plain index into it).
+	relY := y
+	if m.contextMenu != nil {
+		relY -= len(m.contextMenu.items())
+	}
+	idx := m.scrollOffset + relY
+
+	var target *Node
+	if idx >= 0 && idx < len(m.flat) {
+		target = m.flat[idx].node // nil if idx lands on the phantom row itself
+	}
+
 	if m.mode != editNone {
 		m.mode = editNone
 		m.rebuildFlat()
 	}
-	idx := m.scrollOffset + y
-	if idx < 0 || idx >= len(m.flat) || m.flat[idx].node == nil {
+
+	if target == nil {
 		m.contextMenu = &contextMenuState{targetDir: m.root.Path}
 		return m
 	}
-	n := m.flat[idx].node
-	targetDir := n.Path
-	if n.Type != NodeDir {
-		targetDir = filepath.Dir(n.Path)
+	targetDir := target.Path
+	if target.Type != NodeDir {
+		targetDir = filepath.Dir(target.Path)
 	}
-	m.contextMenu = &contextMenuState{targetDir: targetDir, targetPath: n.Path}
+	m.contextMenu = &contextMenuState{targetDir: targetDir, targetPath: target.Path}
 	return m
 }
 
@@ -398,6 +425,9 @@ func (m *Model) collapseCurrent() {
 func (m Model) HandleClick(y int) (Model, tea.Cmd) {
 	if m.contextMenu != nil {
 		items := m.contextMenu.items()
+		if m.height > 0 && len(items) > m.height {
+			items = items[:m.height]
+		}
 		if y >= 0 && y < len(items) {
 			return m.selectContextMenuItem(items[y]), nil
 		}
@@ -466,6 +496,9 @@ func (m Model) View() string {
 		menuItems = m.contextMenu.items()
 	}
 	clip := m.height > 0
+	if clip && len(menuItems) > m.height {
+		menuItems = menuItems[:m.height]
+	}
 	realHeight := m.height - len(menuItems)
 	if realHeight < 0 {
 		realHeight = 0

@@ -669,3 +669,31 @@ func TestRightClickWhileEditingCancelsTheEditFirst(t *testing.T) {
 		t.Fatal("expected a new context menu to open")
 	}
 }
+
+func TestViewTruncatesMenuItemsWhenPaneIsShorterThanTheMenu(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.SetSize(40, 1)
+	m = m.HandleRightClick(0) // targets a file row -> 3-item menu
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) != 1 {
+		t.Fatalf("got %d rendered lines, want 1 (pane height is 1, menu must be truncated to fit) — view:\n%s", len(lines), view)
+	}
+}
+
+func TestCancelledCreateDoesNotLeaveCursorOutOfRangeAfterRebuild(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.startCreate(m.root.Path, false)
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if m.mode != editNone {
+		t.Fatal("expected Esc to cancel edit mode")
+	}
+	if m.cursor < 0 || m.cursor >= len(m.flat) {
+		t.Fatalf("got cursor=%d out of range for %d flat items after cancelling", m.cursor, len(m.flat))
+	}
+	// A subsequent Enter must not panic.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+}

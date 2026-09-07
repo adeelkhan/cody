@@ -1101,3 +1101,23 @@ func TestFileTreeErrorMsgSetsRecentCommand(t *testing.T) {
 		t.Fatalf("got recentCommand=%q, want %q", m.recentCommand, "boom")
 	}
 }
+
+func TestNewWithRelativePathResolvesTreeRootToAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origWd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := New(".", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.tree.SelectedDir() != m.rootPath {
+		t.Fatalf("got tree root %q, want it to match m.rootPath %q — a relative launch path must resolve consistently for both", m.tree.SelectedDir(), m.rootPath)
+	}
+}
