@@ -9,6 +9,13 @@ type Buffer struct {
 	Lines []string
 	Path  string
 	Dirty bool
+
+	// savedLines is the content as of the last load or save — the baseline
+	// SyncDirty compares against. Content-based rather than a monotonic
+	// "has been touched" flag, so undo/redo can clear Dirty again when they
+	// land back on exactly what's on disk (or, for an unsaved buffer, back
+	// on its starting content).
+	savedLines []string
 }
 
 func NewBuffer(path string) (*Buffer, error) {
@@ -17,7 +24,29 @@ func NewBuffer(path string) (*Buffer, error) {
 		return nil, err
 	}
 	lines := strings.Split(string(data), "\n")
-	return &Buffer{Lines: lines, Path: path}, nil
+	return &Buffer{Lines: lines, Path: path, savedLines: snapshotLines(lines)}, nil
+}
+
+// SyncDirty recomputes Dirty by comparing the current content against the
+// last-saved (or, for a buffer that's never been saved, starting) content.
+// Call this after any mutation that doesn't go through the Insert*/Delete*
+// methods above — those set Dirty unconditionally, which is correct since
+// they only ever move content away from the saved baseline; undo/redo can
+// move it back, so they need the real comparison.
+func (b *Buffer) SyncDirty() {
+	b.Dirty = !linesEqual(b.Lines, b.savedLines)
+}
+
+func linesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (b *Buffer) InsertRune(line, col int, r rune) {
@@ -99,6 +128,7 @@ func (b *Buffer) Save() error {
 	if err := os.WriteFile(b.Path, []byte(data), 0644); err != nil {
 		return err
 	}
+	b.savedLines = snapshotLines(b.Lines)
 	b.Dirty = false
 	return nil
 }

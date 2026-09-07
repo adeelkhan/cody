@@ -231,6 +231,47 @@ func TestUndoRestoresPreviousLineContent(t *testing.T) {
 	}
 }
 
+func TestUndoBackToSavedContentClearsDirty(t *testing.T) {
+	m := setupEditor(t, "hello")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	if !m.HasUnsavedChanges() {
+		t.Fatal("expected the buffer to be dirty after an edit")
+	}
+	m.undo()
+	if m.HasUnsavedChanges() {
+		t.Fatal("expected undoing back to the saved content to clear the dirty flag")
+	}
+}
+
+func TestRedoBackToSavedContentClearsDirty(t *testing.T) {
+	m := setupEditor(t, "hello")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	m.undo()
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Y")})
+	m.undo()
+	m.redo() // reapplies "Y" -> dirty again
+	if !m.HasUnsavedChanges() {
+		t.Fatal("expected redoing away from the saved content to leave the buffer dirty")
+	}
+	m.undo() // back to the saved "hello"
+	if m.HasUnsavedChanges() {
+		t.Fatal("expected undoing back to the saved content to clear the dirty flag")
+	}
+}
+
+func TestUndoAfterSaveNoLongerClearsDirty(t *testing.T) {
+	m := setupEditor(t, "hello")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	if err := m.buf.Save(); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Y")})
+	m.undo() // back to "Xhello", which is now the saved content
+	if m.HasUnsavedChanges() {
+		t.Fatal("expected undoing back to the post-save content to clear dirty")
+	}
+}
+
 func TestRedoReappliesUndoneEdit(t *testing.T) {
 	m := setupEditor(t, "hello")
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})

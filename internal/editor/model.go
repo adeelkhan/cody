@@ -209,7 +209,7 @@ func (m Model) HasUnsavedChanges() bool {
 // NewBlankBuffer starts editing a fresh, empty, pathless buffer — created
 // by Ctrl+N, not tied to any file on disk until SaveAs gives it one.
 func (m Model) NewBlankBuffer() Model {
-	m.buf = &Buffer{Lines: []string{""}}
+	m.buf = &Buffer{Lines: []string{""}, savedLines: []string{""}}
 	m.cursorLine = 0
 	m.cursorCol = 0
 	m.selecting = false
@@ -251,6 +251,7 @@ func (m Model) SaveAs(path string) (Model, error) {
 		return m, err
 	}
 	m.buf.Path = path
+	m.buf.savedLines = snapshotLines(m.buf.Lines)
 	m.buf.Dirty = false
 	m.highlighter = nil
 	m.folder = nil
@@ -837,7 +838,7 @@ func (m *Model) undo() string {
 	m.buf.Lines = prev.lines
 	m.cursorLine = prev.cursorLine
 	m.cursorCol = prev.cursorCol
-	m.buf.Dirty = true
+	m.buf.SyncDirty()
 	m.selecting = false
 	return "Undo"
 }
@@ -853,7 +854,7 @@ func (m *Model) redo() string {
 	m.buf.Lines = next.lines
 	m.cursorLine = next.cursorLine
 	m.cursorCol = next.cursorCol
-	m.buf.Dirty = true
+	m.buf.SyncDirty()
 	m.selecting = false
 	return "Redo"
 }
