@@ -41,9 +41,10 @@ go build -o cody ./cmd/cody
 | Key | Action |
 |-----|--------|
 | `Tab` / `Shift+Tab` | Cycle focus: tree → editor → terminal → tree (and reverse) |
+| `Ctrl+N` | New blank ("Untitled") tab — `Ctrl+S` on it prompts for a save path |
 | `Ctrl+O` | Open file by path |
 | `Ctrl+F` | Find in current buffer |
-| `Ctrl+Q` | Quit (cleanly terminates the spawned shell) |
+| `Ctrl+Q` | Quit (cleanly terminates the spawned shell; prompts if any tab has unsaved changes) |
 
 ### Project tree
 
@@ -52,6 +53,12 @@ go build -o cody ./cmd/cody
 | `↑`/`↓` or `j`/`k` | Move selection |
 | `Enter` or `l` | Expand directory / open file (shifts focus to editor) |
 | `h` | Collapse directory |
+| `m` | Open the New File / New Folder / Rename menu for the selected item² |
+| Right-click | Same menu, at the clicked item (or empty space, for New only) |
+
+Once the menu is open: `↑`/`↓` to move between items, `Enter` to pick one,
+`Esc` to close. Picking New File/Folder or Rename shows an inline text field
+in the tree — type the name and `Enter` to confirm, `Esc` to cancel.
 
 ### Editor
 
@@ -94,6 +101,10 @@ version info and the macOS shortcut note.
 
 ¹ Requires a terminal emulator that reports shift-modified keys as distinct escape
 sequences (iTerm2, Alacritty, Kitty, WezTerm, and most other modern emulators).
+
+² Some terminal emulators don't reliably forward right-click to the app (a
+few report it as a left click at the wire-protocol level, which is outside
+this app's control) — `m` always works regardless of terminal.
 
 ## macOS note
 

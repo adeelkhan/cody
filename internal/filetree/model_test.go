@@ -697,3 +697,78 @@ func TestCancelledCreateDoesNotLeaveCursorOutOfRangeAfterRebuild(t *testing.T) {
 	// A subsequent Enter must not panic.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 }
+
+func TestMKeyOpensContextMenuOnSelectedRow(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	target := m.flat[0].node.Path
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+
+	if m.contextMenu == nil {
+		t.Fatal("expected 'm' to open the context menu")
+	}
+	if m.contextMenu.targetPath != target {
+		t.Fatalf("got targetPath=%q, want %q (the currently selected row)", m.contextMenu.targetPath, target)
+	}
+	items := m.contextMenu.items()
+	if len(items) != 3 || items[2] != "Rename" {
+		t.Fatalf("got items=%v, want [New File, New Folder, Rename] (a specific row is targeted)", items)
+	}
+}
+
+func TestOpenContextMenuOnDirectoryTargetsItself(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.OpenContextMenu()
+	if m.contextMenu.targetDir != filepath.Join(dir, "sub") {
+		t.Fatalf("got targetDir=%q, want %q", m.contextMenu.targetDir, filepath.Join(dir, "sub"))
+	}
+}
+
+func TestArrowKeysNavigateOpenContextMenuAndEnterSelects(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.OpenContextMenu() // selected starts at 0 ("New File")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.contextMenu.selected != 1 {
+		t.Fatalf("got selected=%d, want 1 (New Folder) after one Down", m.contextMenu.selected)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.contextMenu.selected != 2 {
+		t.Fatalf("got selected=%d, want 2 (Rename) after two Down", m.contextMenu.selected)
+	}
+	// Wraps back to 0 past the last item.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.contextMenu.selected != 0 {
+		t.Fatalf("got selected=%d, want 0 (wrapped)", m.contextMenu.selected)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if m.contextMenu.selected != 2 {
+		t.Fatalf("got selected=%d, want 2 (wrapped backward)", m.contextMenu.selected)
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != editRenaming {
+		t.Fatalf("got mode=%v, want editRenaming (Enter on the highlighted 'Rename' item)", m.mode)
+	}
+	if m.contextMenu != nil {
+		t.Fatal("expected the menu to close once an item is selected via Enter")
+	}
+}
+
+func TestEscClosesKeyboardOpenedContextMenu(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.OpenContextMenu()
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if m.contextMenu != nil {
+		t.Fatal("expected Esc to close the context menu")
+	}
+}

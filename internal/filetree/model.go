@@ -32,12 +32,16 @@ const (
 	editRenaming
 )
 
-// contextMenuState describes an open right-click menu: where new items
-// would be created, and (if a specific row was clicked) which one, since
-// that's what enables the Rename option.
+// contextMenuState describes an open create/rename menu: where new items
+// would be created, and (if a specific row was targeted) which one, since
+// that's what enables the Rename option. Opened either by right-click
+// (HandleRightClick) or by keyboard (OpenContextMenu, for terminals that
+// don't forward right-click reliably — some report it as a left click at
+// the wire-protocol level, outside this app's control).
 type contextMenuState struct {
 	targetDir  string
-	targetPath string // "" if the right-click hit empty space
+	targetPath string // "" if no specific row was targeted
+	selected   int    // which item is highlighted, for keyboard navigation
 }
 
 // items lists this menu's actions in render/click order — Rename only
@@ -263,6 +267,34 @@ func (m Model) HandleRightClick(y int) Model {
 	return m
 }
 
+// OpenContextMenu opens the create/rename menu targeting the currently
+// selected row — the same menu HandleRightClick opens, reached by keyboard
+// instead of a mouse click. A keyboard-accessible fallback for terminals
+// that don't reliably forward right-click to the app (some report it using
+// the same wire-protocol code as a left click, which this app has no way
+// to distinguish or work around).
+func (m Model) OpenContextMenu() Model {
+	if m.mode != editNone {
+		m.mode = editNone
+		m.rebuildFlat()
+	}
+	if len(m.flat) == 0 || m.cursor < 0 || m.cursor >= len(m.flat) {
+		m.contextMenu = &contextMenuState{targetDir: m.root.Path}
+		return m
+	}
+	n := m.flat[m.cursor].node
+	if n == nil {
+		m.contextMenu = &contextMenuState{targetDir: m.root.Path}
+		return m
+	}
+	targetDir := n.Path
+	if n.Type != NodeDir {
+		targetDir = filepath.Dir(n.Path)
+	}
+	m.contextMenu = &contextMenuState{targetDir: targetDir, targetPath: n.Path}
+	return m
+}
+
 func (m Model) selectContextMenuItem(label string) Model {
 	cm := m.contextMenu
 	m.contextMenu = nil
@@ -356,8 +388,22 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m.updateEditInput(keyMsg)
 	}
 	if m.contextMenu != nil {
-		if keyMsg.String() == "esc" {
+		items := m.contextMenu.items()
+		switch keyMsg.String() {
+		case "esc":
 			m.contextMenu = nil
+		case "up", "k":
+			m.contextMenu.selected--
+			if m.contextMenu.selected < 0 {
+				m.contextMenu.selected = len(items) - 1
+			}
+		case "down", "j":
+			m.contextMenu.selected++
+			if m.contextMenu.selected >= len(items) {
+				m.contextMenu.selected = 0
+			}
+		case "enter":
+			m = m.selectContextMenuItem(items[m.contextMenu.selected])
 		}
 		return m, nil
 	}
@@ -375,6 +421,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.collapseCurrent()
 	case "right", "l", "enter":
 		m, cmd = m.activateCurrent()
+	case "m":
+		m = m.OpenContextMenu()
 	}
 	m.ensureCursorVisible()
 	return m, cmd
@@ -532,8 +580,12 @@ func (m Model) View() string {
 	}
 
 	var b strings.Builder
-	for _, label := range menuItems {
-		b.WriteString("  [" + label + "]\n")
+	for i, label := range menuItems {
+		prefix := "  "
+		if m.contextMenu != nil && i == m.contextMenu.selected {
+			prefix = "> "
+		}
+		b.WriteString(prefix + "[" + label + "]\n")
 	}
 	for idx := viewStart; idx < viewEnd; idx++ {
 		item := m.flat[idx]
