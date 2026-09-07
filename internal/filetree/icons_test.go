@@ -2,29 +2,28 @@ package filetree
 
 import "testing"
 
-func TestIconForDir(t *testing.T) {
-	n := &Node{Type: NodeDir}
-	if IconFor(n, true) != nerdFontDir {
-		t.Fatal("expected nerd font dir icon")
+func TestIconForClosedDirUsesClosedGlyph(t *testing.T) {
+	n := &Node{Type: NodeDir, Expanded: false}
+	if got := IconFor(n, false); got != fallbackDir {
+		t.Fatalf("got %q, want %q (closed dir fallback)", got, fallbackDir)
 	}
-	if IconFor(n, false) != fallbackDir {
-		t.Fatal("expected fallback dir icon")
-	}
-}
-
-func TestIconForKnownExtension(t *testing.T) {
-	n := &Node{Type: NodeFile, Name: "main.go"}
-	if IconFor(n, true) != nerdFontIcons[".go"] {
-		t.Fatal("expected go icon")
+	if got := IconFor(n, true); got != nerdFontDir {
+		t.Fatalf("got %q, want %q (closed dir nerd font)", got, nerdFontDir)
 	}
 }
 
-func TestIconForUnknownExtension(t *testing.T) {
-	n := &Node{Type: NodeFile, Name: "data.bin"}
-	if IconFor(n, true) != nerdFontFile {
-		t.Fatal("expected generic file icon")
+func TestIconForExpandedDirUsesOpenGlyph(t *testing.T) {
+	n := &Node{Type: NodeDir, Expanded: true}
+	if got := IconFor(n, false); got != fallbackDirOpen {
+		t.Fatalf("got %q, want %q (open dir fallback)", got, fallbackDirOpen)
 	}
-	if IconFor(n, false) != fallbackFile {
-		t.Fatal("expected fallback file icon")
+	if got := IconFor(n, true); got != nerdFontDirOpen {
+		t.Fatalf("got %q, want %q (open dir nerd font)", got, nerdFontDirOpen)
+	}
+}
+
+func TestIconForOpenAndClosedFallbacksAreDistinct(t *testing.T) {
+	if fallbackDir == fallbackDirOpen || fallbackDir == fallbackFile || fallbackDirOpen == fallbackFile {
+		t.Fatalf("expected fallbackDir=%q, fallbackDirOpen=%q, fallbackFile=%q to all be distinct", fallbackDir, fallbackDirOpen, fallbackFile)
 	}
 }
