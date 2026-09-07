@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -14,6 +15,22 @@ import (
 type FileOpenedMsg struct {
 	Path string
 }
+
+// FileTreeErrorMsg reports a failed create/rename to the app, which shows
+// it in the status bar the same way it already shows other transient
+// status messages.
+type FileTreeErrorMsg struct {
+	Message string
+}
+
+type editMode int
+
+const (
+	editNone editMode = iota
+	editCreatingFile
+	editCreatingDir
+	editRenaming
+)
 
 // scrollbarGutterWidth reserves one space plus one rune for the scrollbar
 // column appended to each rendered row.
@@ -36,6 +53,10 @@ type Model struct {
 	height       int
 	scrollOffset int
 	dirty        map[string]bool
+
+	mode       editMode
+	editInput  textinput.Model
+	editTarget string // create: target directory; rename: the node's current path
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -58,6 +79,9 @@ func (m *Model) rebuildFlat() {
 				walk(c, depth+1)
 			}
 		}
+		if n.Path == m.editTarget && (m.mode == editCreatingFile || m.mode == editCreatingDir) {
+			m.flat = append(m.flat, flatItem{node: nil, depth: depth + 1})
+		}
 	}
 	walk(m.root, 0)
 }
@@ -77,12 +101,16 @@ func (m Model) SetDirty(dirty map[string]bool) Model {
 
 // SelectedDir returns the directory context for creating a new file/folder:
 // the selected node itself if it's a directory, its parent otherwise. Falls
-// back to the tree's root when nothing is selected (e.g. an empty tree).
+// back to the tree's root when nothing is selected (e.g. an empty tree, or
+// the selection is currently the phantom "typing a new name" row).
 func (m Model) SelectedDir() string {
 	if len(m.flat) == 0 || m.cursor < 0 || m.cursor >= len(m.flat) {
 		return m.root.Path
 	}
 	n := m.flat[m.cursor].node
+	if n == nil {
+		return m.root.Path
+	}
 	if n.Type == NodeDir {
 		return n.Path
 	}
@@ -129,10 +157,117 @@ func (m Model) ReloadDir(dirPath string) Model {
 	return m
 }
 
+func (m Model) startCreate(dir string, isDir bool) Model {
+	if n := m.findNode(dir); n != nil {
+		n.Expanded = true
+		n.LoadChildren()
+	}
+	m.mode = editCreatingFile
+	if isDir {
+		m.mode = editCreatingDir
+	}
+	m.editTarget = dir
+	m.editInput = textinput.New()
+	m.editInput.Focus()
+	m.rebuildFlat()
+	if idx := m.indexOfPhantom(); idx >= 0 {
+		m.cursor = idx
+	}
+	m.ensureCursorVisible()
+	return m
+}
+
+func (m Model) startRename(path string) Model {
+	m.mode = editRenaming
+	m.editTarget = path
+	m.editInput = textinput.New()
+	m.editInput.SetValue(filepath.Base(path))
+	m.editInput.CursorEnd()
+	m.editInput.Focus()
+	if idx := m.indexOfNode(path); idx >= 0 {
+		m.cursor = idx
+	}
+	m.ensureCursorVisible()
+	return m
+}
+
+// indexOfPhantom returns the flat-list index of the "typing a new name"
+// row, or -1 if there isn't one.
+func (m Model) indexOfPhantom() int {
+	for i, item := range m.flat {
+		if item.node == nil {
+			return i
+		}
+	}
+	return -1
+}
+
+// indexOfNode returns the flat-list index of the node at path, or -1 if
+// it isn't currently visible (e.g. its parent directory is collapsed).
+func (m Model) indexOfNode(path string) int {
+	for i, item := range m.flat {
+		if item.node != nil && item.node.Path == path {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m Model) updateEditInput(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
+	switch keyMsg.String() {
+	case "esc":
+		m.mode = editNone
+		m.rebuildFlat()
+		return m, nil
+	case "enter":
+		return m.submitEdit()
+	}
+	var cmd tea.Cmd
+	m.editInput, cmd = m.editInput.Update(keyMsg)
+	return m, cmd
+}
+
+func (m Model) submitEdit() (Model, tea.Cmd) {
+	name := m.editInput.Value()
+	if name == "" {
+		return m, func() tea.Msg { return FileTreeErrorMsg{Message: "name is required"} }
+	}
+	switch m.mode {
+	case editCreatingFile:
+		full := filepath.Join(m.editTarget, name)
+		if err := CreateFile(full); err != nil {
+			return m, func() tea.Msg { return FileTreeErrorMsg{Message: err.Error()} }
+		}
+		m.mode = editNone
+		m = m.ReloadDir(m.editTarget)
+		return m, func() tea.Msg { return FileOpenedMsg{Path: full} }
+	case editCreatingDir:
+		full := filepath.Join(m.editTarget, name)
+		if err := CreateDir(full); err != nil {
+			return m, func() tea.Msg { return FileTreeErrorMsg{Message: err.Error()} }
+		}
+		m.mode = editNone
+		m = m.ReloadDir(m.editTarget)
+		return m, nil
+	case editRenaming:
+		newPath := filepath.Join(filepath.Dir(m.editTarget), name)
+		if err := Rename(m.editTarget, newPath); err != nil {
+			return m, func() tea.Msg { return FileTreeErrorMsg{Message: err.Error()} }
+		}
+		m.mode = editNone
+		m = m.ReloadDir(filepath.Dir(m.editTarget))
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
+	}
+	if m.mode != editNone {
+		return m.updateEditInput(keyMsg)
 	}
 	var cmd tea.Cmd
 	switch keyMsg.String() {
@@ -196,6 +331,11 @@ func (m *Model) collapseCurrent() {
 // collapsing a directory, or opening a file. A click past the last item is
 // a no-op.
 func (m Model) HandleClick(y int) (Model, tea.Cmd) {
+	if m.mode != editNone {
+		m.mode = editNone
+		m.rebuildFlat()
+		return m, nil
+	}
 	idx := m.scrollOffset + y
 	if idx < 0 || idx >= len(m.flat) {
 		return m, nil
@@ -278,10 +418,18 @@ func (m Model) View() string {
 	for idx := viewStart; idx < viewEnd; idx++ {
 		item := m.flat[idx]
 		prefix := strings.Repeat("  ", item.depth)
-		icon := IconFor(item.node, m.nerdFont)
-		line := fmt.Sprintf("%s%s %s", prefix, icon, item.node.Name)
-		if m.dirty[item.node.Path] {
-			line += dirtyStyle.Render(" (M)")
+		var line string
+		switch {
+		case item.node == nil:
+			line = prefix + m.editInput.View()
+		case m.mode == editRenaming && item.node.Path == m.editTarget:
+			line = prefix + m.editInput.View()
+		default:
+			icon := IconFor(item.node, m.nerdFont)
+			line = fmt.Sprintf("%s%s %s", prefix, icon, item.node.Name)
+			if m.dirty[item.node.Path] {
+				line += dirtyStyle.Render(" (M)")
+			}
 		}
 		if idx == m.cursor {
 			line = "> " + line

@@ -342,3 +342,209 @@ func TestReloadDirOnUnknownPathIsANoOp(t *testing.T) {
 		t.Fatalf("got %d flat items, want %d (unchanged)", len(m.flat), before)
 	}
 }
+
+func TestStartCreateFileInsertsPhantomRowAtEndOfTargetDir(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(sub, "existing.go"), "")
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.startCreate(sub, false)
+
+	if m.mode != editCreatingFile {
+		t.Fatalf("got mode=%v, want editCreatingFile", m.mode)
+	}
+	// "sub" must now be expanded (auto-expanded so the phantom row is
+	// visible), with "existing.go" then the phantom row (node == nil) as
+	// its last two children.
+	var subIdx, phantomIdx int = -1, -1
+	for i, item := range m.flat {
+		if item.node != nil && item.node.Path == sub {
+			subIdx = i
+		}
+		if item.node == nil {
+			phantomIdx = i
+		}
+	}
+	if subIdx < 0 {
+		t.Fatal("expected 'sub' to be present in the flat list")
+	}
+	if phantomIdx != subIdx+2 { // sub, then existing.go, then the phantom
+		t.Fatalf("got phantom at index %d, want %d (right after sub's one real child)", phantomIdx, subIdx+2)
+	}
+	if m.cursor != phantomIdx {
+		t.Fatalf("got cursor=%d, want %d (the phantom row, so it's scrolled into view)", m.cursor, phantomIdx)
+	}
+}
+
+func TestStartRenamePrefillsInputWithCurrentName(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	target := m.flat[1].node.Path
+	m = m.startRename(target)
+
+	if m.mode != editRenaming {
+		t.Fatalf("got mode=%v, want editRenaming", m.mode)
+	}
+	if m.editInput.Value() != filepath.Base(target) {
+		t.Fatalf("got input value %q, want %q", m.editInput.Value(), filepath.Base(target))
+	}
+	if m.cursor != 1 {
+		t.Fatalf("got cursor=%d, want 1 (the row being renamed)", m.cursor)
+	}
+}
+
+func TestSubmitCreateFileMakesFileReloadsTreeAndEmitsFileOpenedMsg(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.startCreate(dir, false)
+	m.editInput.SetValue("new.go")
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.mode != editNone {
+		t.Fatal("expected edit mode to end after a successful create")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "new.go")); err != nil {
+		t.Fatalf("expected new.go to exist on disk: %v", err)
+	}
+	found := false
+	for _, item := range m.flat {
+		if item.node != nil && item.node.Name == "new.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected new.go to appear in the reloaded flat list")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command")
+	}
+	msg, ok := cmd().(FileOpenedMsg)
+	if !ok || filepath.Base(msg.Path) != "new.go" {
+		t.Fatalf("got %+v, ok=%v, want FileOpenedMsg for new.go", msg, ok)
+	}
+}
+
+func TestSubmitCreateDirDoesNotEmitFileOpenedMsg(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.startCreate(dir, true)
+	m.editInput.SetValue("newdir")
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.mode != editNone {
+		t.Fatal("expected edit mode to end after a successful create")
+	}
+	info, err := os.Stat(filepath.Join(dir, "newdir"))
+	if err != nil || !info.IsDir() {
+		t.Fatal("expected newdir to exist as a directory")
+	}
+	if cmd != nil {
+		if _, ok := cmd().(FileOpenedMsg); ok {
+			t.Fatal("expected creating a directory not to emit FileOpenedMsg")
+		}
+	}
+}
+
+func TestSubmitCreateWithExistingNameReportsErrorAndStaysInEditMode(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "existing.go"), "")
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.startCreate(dir, false)
+	m.editInput.SetValue("existing.go")
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.mode != editCreatingFile {
+		t.Fatal("expected to stay in edit mode after a failed create")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command reporting the error")
+	}
+	msg, ok := cmd().(FileTreeErrorMsg)
+	if !ok || msg.Message == "" {
+		t.Fatalf("got %+v, ok=%v, want a non-empty FileTreeErrorMsg", msg, ok)
+	}
+}
+
+func TestSubmitRenameMovesTheFileAndReloadsTree(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "old.go"), "content")
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPath := m.flat[0].node.Path
+	m = m.startRename(oldPath)
+	m.editInput.SetValue("new.go")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.mode != editNone {
+		t.Fatal("expected edit mode to end after a successful rename")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "old.go")); !os.IsNotExist(err) {
+		t.Fatal("expected old.go to no longer exist")
+	}
+	found := false
+	for _, item := range m.flat {
+		if item.node != nil && item.node.Name == "new.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected new.go to appear in the reloaded flat list")
+	}
+}
+
+func TestEscCancelsCreateWithoutTouchingDisk(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(m.flat)
+	m = m.startCreate(dir, false)
+	m.editInput.SetValue("would-be-created.go")
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if m.mode != editNone {
+		t.Fatal("expected Esc to cancel edit mode")
+	}
+	if len(m.flat) != before {
+		t.Fatalf("got %d flat items, want %d (phantom row removed, nothing created)", len(m.flat), before)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "would-be-created.go")); !os.IsNotExist(err) {
+		t.Fatal("expected Esc not to create anything on disk")
+	}
+}
+
+func TestClickWhileEditingCancelsWithoutActing(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.startRename(m.flat[0].node.Path)
+
+	m, cmd := m.HandleClick(1)
+
+	if m.mode != editNone {
+		t.Fatal("expected a click during edit mode to cancel it")
+	}
+	if cmd != nil {
+		t.Fatal("expected no command — a click during edit mode only cancels, it doesn't also activate the clicked row")
+	}
+}
