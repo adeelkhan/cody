@@ -25,20 +25,26 @@
 
 **Files:**
 - Modify: `internal/filetree/icons.go`
-- Test: `internal/filetree/icons_test.go` (new file)
+- Modify: `internal/filetree/icons_test.go` (this file already exists — it has
+  three tests today: `TestIconForDir`, `TestIconForKnownExtension`,
+  `TestIconForUnknownExtension`. Add the new tests below to it; do **not**
+  replace the file or delete any of its existing tests — `TestIconForDir`
+  is superseded by the more specific closed/expanded tests below and may
+  be removed, but `TestIconForKnownExtension` and `TestIconForUnknownExtension`
+  cover file-extension icon lookup, which this task does not touch, and
+  must be preserved as-is)
 
 **Interfaces:**
 - Produces: `IconFor` now depends on `Node.Expanded` for directories — no signature change, existing callers (`View()`) are unaffected since they already pass the real `*Node`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `internal/filetree/icons_test.go`:
+In `internal/filetree/icons_test.go`, replace only `TestIconForDir` (the
+other two existing tests are untouched) and add these new tests, so the
+file ends up with `TestIconForKnownExtension`, `TestIconForUnknownExtension`
+(both unchanged from what's already there), plus:
 
 ```go
-package filetree
-
-import "testing"
-
 func TestIconForClosedDirUsesClosedGlyph(t *testing.T) {
 	n := &Node{Type: NodeDir, Expanded: false}
 	if got := IconFor(n, false); got != fallbackDir {
@@ -64,16 +70,69 @@ func TestIconForOpenAndClosedFallbacksAreDistinct(t *testing.T) {
 		t.Fatalf("expected fallbackDir=%q, fallbackDirOpen=%q, fallbackFile=%q to all be distinct", fallbackDir, fallbackDirOpen, fallbackFile)
 	}
 }
+
+// TestNerdFontGlyphsAreRealCodepointsNotEmpty is a canary against a past
+// failure mode: writing the Private Use Area glyphs below as pasted
+// (invisible) characters rather than typed backslash-u escapes has
+// silently produced empty strings before, and a test that only compares
+// IconFor's output against the package's own constants (like the tests
+// above) can never catch that -- an empty constant matches an empty
+// constant. This test instead compares against literal expected rune
+// values written as backslash-u escapes in a rune literal.
+func TestNerdFontGlyphsAreRealCodepointsNotEmpty(t *testing.T) {
+	cases := map[string]rune{
+		"nerdFontDir":     '\uf07b',
+		"nerdFontDirOpen": '\uf07c',
+		"nerdFontFile":    '\uf15b',
+	}
+	got := map[string]string{
+		"nerdFontDir":     nerdFontDir,
+		"nerdFontDirOpen": nerdFontDirOpen,
+		"nerdFontFile":    nerdFontFile,
+	}
+	for name, want := range cases {
+		g := got[name]
+		if g == "" {
+			t.Fatalf("%s is empty -- expected literal codepoint %U", name, want)
+		}
+		r := []rune(g)
+		if len(r) != 1 || r[0] != want {
+			t.Fatalf("%s = %U, want %U", name, r, want)
+		}
+	}
+	extCases := map[string]rune{
+		".go": '\ue626', ".py": '\ue606', ".js": '\ue60c',
+		".ts": '\ue628', ".json": '\ue60b', ".md": '\ue73e',
+	}
+	for ext, want := range extCases {
+		g, ok := nerdFontIcons[ext]
+		if !ok || g == "" {
+			t.Fatalf("nerdFontIcons[%q] is empty -- expected literal codepoint %U", ext, want)
+		}
+		r := []rune(g)
+		if len(r) != 1 || r[0] != want {
+			t.Fatalf("nerdFontIcons[%q] = %U, want %U", ext, r, want)
+		}
+	}
+}
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./internal/filetree/ -run TestIconFor -v`
+Run: `go test ./internal/filetree/ -run 'TestIconFor|TestNerdFontGlyphs' -v`
 Expected: FAIL to compile (`fallbackDirOpen`/`nerdFontDirOpen` undefined).
 
 - [ ] **Step 3: Implement the open-folder icon**
 
 Replace the whole of `internal/filetree/icons.go` with:
+
+**IMPORTANT — type these as literal Go `\u` escape sequences, four hex digits after `\u`, not as pasted glyphs.**
+Every Nerd Font glyph below is a Unicode Private Use Area codepoint that
+renders as invisible/blank in a normal font. Pasting the rendered
+character (as opposed to typing the six-character escape sequence
+`\uXXXX` literally) has previously produced silent empty-string bugs that
+`go test` does not catch. Type the backslash, the letter u, and four hex
+digits as literal source characters.
 
 ```go
 package filetree
@@ -81,18 +140,18 @@ package filetree
 import "path/filepath"
 
 var nerdFontIcons = map[string]string{
-	".go":   "",
-	".py":   "",
-	".js":   "",
-	".ts":   "",
-	".json": "",
-	".md":   "",
+	".go":   "\ue626",
+	".py":   "\ue606",
+	".js":   "\ue60c",
+	".ts":   "\ue628",
+	".json": "\ue60b",
+	".md":   "\ue73e",
 }
 
 const (
-	nerdFontDir     = "" // fa-folder, closed
-	nerdFontDirOpen = "" // fa-folder-open
-	nerdFontFile    = ""
+	nerdFontDir     = "\uf07b" // fa-folder, closed
+	nerdFontDirOpen = "\uf07c" // fa-folder-open — one codepoint after the closed glyph
+	nerdFontFile    = "\uf15b"
 	fallbackDir     = "+"
 	fallbackDirOpen = "~"
 	fallbackFile    = "-"
@@ -120,6 +179,23 @@ func IconFor(n *Node, nerdFont bool) string {
 	return fallbackFile
 }
 ```
+
+After writing the file, verify the exact bytes landed correctly — a
+mismatch here is invisible to `go test` if tests only compare output
+against the package's own constants. Run:
+
+```bash
+python3 -c "
+with open('internal/filetree/icons.go', 'rb') as f:
+    print(repr(f.read().decode('utf-8')))
+"
+```
+
+The printed `repr` output must show `\ue626`, `\ue606`, `\ue60c`,
+`\ue628`, `\ue60b`, `\ue73e`, `\uf07b`, `\uf07c`, and `\uf15b` as
+literal escape sequences (backslash-u-four-hex-digits) — if any of them
+instead show as an empty string `""`, the write went wrong; fix it before
+proceeding.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
