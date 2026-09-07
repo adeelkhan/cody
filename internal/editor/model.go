@@ -2,6 +2,7 @@ package editor
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -237,12 +238,22 @@ func (m Model) IsUntitled() bool {
 // SaveAs writes the buffer's current content to path for the first time,
 // attaching that path to the buffer, then runs the same language-detection
 // LoadFile does at load time — an untitled buffer has no extension to
-// detect a language from until now.
+// detect a language from until now. The write happens before any buffer
+// state is mutated: m.buf is a shared pointer, so mutating it ahead of a
+// write that then fails would leave the buffer claiming a path nothing
+// was ever written to.
 func (m Model) SaveAs(path string) (Model, error) {
-	m.buf.Path = path
-	if err := m.buf.Save(); err != nil {
+	if m.buf == nil {
+		return m, fmt.Errorf("no buffer to save")
+	}
+	data := strings.Join(m.buf.Lines, "\n")
+	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
 		return m, err
 	}
+	m.buf.Path = path
+	m.buf.Dirty = false
+	m.highlighter = nil
+	m.folder = nil
 	if lang, ok := highlight.LanguageForPath(path); ok {
 		if h, err := highlight.New(lang); err == nil {
 			m.highlighter = h

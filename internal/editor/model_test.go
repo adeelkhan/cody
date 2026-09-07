@@ -1365,3 +1365,20 @@ func TestSaveAsPicksUpSyntaxHighlighting(t *testing.T) {
 		t.Fatal("expected syntax highlighting to be active after SaveAs picks up the .go extension")
 	}
 }
+
+func TestSaveAsOnWriteFailureLeavesBufferUntitled(t *testing.T) {
+	m := New().NewBlankBuffer()
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("content")})
+
+	badPath := filepath.Join(t.TempDir(), "nonexistent-dir", "file.go")
+	_, err := m.SaveAs(badPath)
+	if err == nil {
+		t.Fatal("expected an error writing to a nonexistent directory")
+	}
+	if !m.IsUntitled() {
+		t.Fatal("expected the buffer to remain untitled after a failed SaveAs")
+	}
+	if !m.HasUnsavedChanges() {
+		t.Fatal("expected the buffer to remain dirty after a failed SaveAs")
+	}
+}
