@@ -3,18 +3,18 @@ package filetree
 import "path/filepath"
 
 var nerdFontIcons = map[string]string{
-	".go":   "",
-	".py":   "",
-	".js":   "",
-	".ts":   "",
-	".json": "",
-	".md":   "",
+	".go":   "",
+	".py":   "",
+	".js":   "",
+	".ts":   "",
+	".json": "",
+	".md":   "",
 }
 
 const (
-	nerdFontDir     = "" // fa-folder, closed
-	nerdFontDirOpen = "" // fa-folder-open
-	nerdFontFile    = ""
+	nerdFontDir     = "" // fa-folder, closed
+	nerdFontDirOpen = "" // fa-folder-open — one codepoint after the closed glyph
+	nerdFontFile    = ""
 	fallbackDir     = "+"
 	fallbackDirOpen = "~"
 	fallbackFile    = "-"
