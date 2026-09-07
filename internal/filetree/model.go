@@ -37,7 +37,10 @@ const (
 // that's what enables the Rename option. Opened either by right-click
 // (HandleRightClick) or by keyboard (OpenContextMenu, for terminals that
 // don't forward right-click reliably — some report it as a left click at
-// the wire-protocol level, outside this app's control).
+// the wire-protocol level, outside this app's control). Rendered as a
+// bordered box spliced into the tree's own row list, immediately below the
+// row it's anchored to (or at the end of the listing, for an empty-space
+// target) — see appendMenuRows.
 type contextMenuState struct {
 	targetDir  string
 	targetPath string // "" if no specific row was targeted
@@ -60,10 +63,20 @@ const scrollbarGutterWidth = 2
 
 var scrollbarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 var dirtyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+var menuBorderStyle = lipgloss.NewStyle().
+	Border(lipgloss.NormalBorder()).
+	BorderForeground(lipgloss.Color("205"))
 
 type flatItem struct {
 	node  *Node
 	depth int
+	// menuLine is non-empty when this row is part of the open context
+	// menu's bordered block (a border line or an item line, one per
+	// physical line of the rendered block).
+	menuLine string
+	// menuItemIdx is, for a menuLine row, which item it is (an index into
+	// contextMenu.items()); -1 for a border line or a non-menu row.
+	menuItemIdx int
 }
 
 type Model struct {
@@ -97,16 +110,22 @@ func (m *Model) rebuildFlat() {
 	var walk func(n *Node, depth int)
 	walk = func(n *Node, depth int) {
 		for _, c := range n.Children {
-			m.flat = append(m.flat, flatItem{node: c, depth: depth})
+			m.flat = append(m.flat, flatItem{node: c, depth: depth, menuItemIdx: -1})
+			if m.contextMenu != nil && c.Path == m.contextMenu.targetPath {
+				m.appendMenuRows(depth)
+			}
 			if c.Type == NodeDir && c.Expanded {
 				walk(c, depth+1)
 			}
 		}
 		if n.Path == m.editTarget && (m.mode == editCreatingFile || m.mode == editCreatingDir) {
-			m.flat = append(m.flat, flatItem{node: nil, depth: depth + 1})
+			m.flat = append(m.flat, flatItem{node: nil, depth: depth + 1, menuItemIdx: -1})
 		}
 	}
 	walk(m.root, 0)
+	if m.contextMenu != nil && m.contextMenu.targetPath == "" {
+		m.appendMenuRows(0)
+	}
 	// rebuildFlat can shrink the list (e.g. cancelling an in-progress
 	// create removes the phantom row m.cursor was parked on) — clamp here,
 	// the one place the list length actually changes, rather than at every
@@ -117,6 +136,39 @@ func (m *Model) rebuildFlat() {
 	if m.cursor < 0 {
 		m.cursor = 0
 	}
+}
+
+// appendMenuRows splices the open context menu's bordered block (one
+// flatItem per physical line: top border, one line per item, bottom
+// border) at depth, immediately after the row it's anchored to (or, for an
+// empty-space target, at the end of the whole listing).
+func (m *Model) appendMenuRows(depth int) {
+	items := m.contextMenu.items()
+	lines := m.renderMenuBlock()
+	for i, line := range lines {
+		itemIdx := -1
+		if i >= 1 && i <= len(items) {
+			itemIdx = i - 1
+		}
+		m.flat = append(m.flat, flatItem{depth: depth, menuLine: line, menuItemIdx: itemIdx})
+	}
+}
+
+// renderMenuBlock renders the open context menu as a bordered box — the
+// selected item shown in reverse video — and splits it into individual
+// physical lines for splicing into m.flat via appendMenuRows.
+func (m Model) renderMenuBlock() []string {
+	items := m.contextMenu.items()
+	lines := make([]string, len(items))
+	for i, label := range items {
+		if i == m.contextMenu.selected {
+			lines[i] = lipgloss.NewStyle().Reverse(true).Render(label)
+		} else {
+			lines[i] = label
+		}
+	}
+	block := menuBorderStyle.Render(strings.Join(lines, "\n"))
+	return strings.Split(block, "\n")
 }
 
 func (m Model) SetSize(width, height int) Model {
@@ -232,39 +284,23 @@ func (m Model) startRename(path string) Model {
 // signals "do something else now" rather than leaving a stale phantom row
 // or edit state behind).
 func (m Model) HandleRightClick(y int) Model {
-	// Resolve the target against the state that was actually on screen for
-	// this click — before any mutation the click itself triggers. If a
-	// menu is already open, its rows were drawn above the tree content, so
-	// their count must be subtracted from y first. If an edit is in
-	// progress, its phantom row is still part of m.flat right now; capture
-	// the target *Node pointer before cancelling (which rebuilds m.flat
-	// and would invalidate a plain index into it).
-	relY := y
-	if m.contextMenu != nil {
-		relY -= len(m.contextMenu.items())
-	}
-	idx := m.scrollOffset + relY
-
+	// m.flat already reflects whatever's actually on screen right now —
+	// including an already-open menu's own rows, or an in-progress edit's
+	// phantom row — so read the target straight off it before anything
+	// the click itself triggers (openMenuFor's rebuild) can change it.
+	idx := m.scrollOffset + y
 	var target *Node
 	if idx >= 0 && idx < len(m.flat) {
-		target = m.flat[idx].node // nil if idx lands on the phantom row itself
+		target = m.flat[idx].node // nil on a phantom row or an existing menu's own rows
 	}
-
-	if m.mode != editNone {
-		m.mode = editNone
-		m.rebuildFlat()
-	}
-
 	if target == nil {
-		m.contextMenu = &contextMenuState{targetDir: m.root.Path}
-		return m
+		return m.openMenuFor(m.root.Path, "")
 	}
 	targetDir := target.Path
 	if target.Type != NodeDir {
 		targetDir = filepath.Dir(target.Path)
 	}
-	m.contextMenu = &contextMenuState{targetDir: targetDir, targetPath: target.Path}
-	return m
+	return m.openMenuFor(targetDir, target.Path)
 }
 
 // OpenContextMenu opens the create/rename menu targeting the currently
@@ -274,25 +310,48 @@ func (m Model) HandleRightClick(y int) Model {
 // the same wire-protocol code as a left click, which this app has no way
 // to distinguish or work around).
 func (m Model) OpenContextMenu() Model {
-	if m.mode != editNone {
-		m.mode = editNone
-		m.rebuildFlat()
-	}
 	if len(m.flat) == 0 || m.cursor < 0 || m.cursor >= len(m.flat) {
-		m.contextMenu = &contextMenuState{targetDir: m.root.Path}
-		return m
+		return m.openMenuFor(m.root.Path, "")
 	}
 	n := m.flat[m.cursor].node
 	if n == nil {
-		m.contextMenu = &contextMenuState{targetDir: m.root.Path}
-		return m
+		return m.openMenuFor(m.root.Path, "")
 	}
 	targetDir := n.Path
 	if n.Type != NodeDir {
 		targetDir = filepath.Dir(n.Path)
 	}
-	m.contextMenu = &contextMenuState{targetDir: targetDir, targetPath: n.Path}
+	return m.openMenuFor(targetDir, n.Path)
+}
+
+// openMenuFor opens the context menu (cancelling any in-progress
+// create/rename first) targeting targetDir/targetPath, rebuilds the flat
+// list so the menu's bordered block is spliced in at the right spot, and
+// scrolls the viewport to show it.
+func (m Model) openMenuFor(targetDir, targetPath string) Model {
+	m.mode = editNone
+	m.contextMenu = &contextMenuState{targetDir: targetDir, targetPath: targetPath}
+	m.rebuildFlat()
+	m.scrollToShowMenu()
 	return m
+}
+
+// scrollToShowMenu positions the cursor at the open menu's last rendered
+// line so ensureCursorVisible scrolls the viewport to include the whole
+// menu (and the row it's anchored to, immediately above) whenever it fits
+// within the pane's height.
+func (m *Model) scrollToShowMenu() {
+	last := -1
+	for i, item := range m.flat {
+		if item.menuLine != "" {
+			last = i
+		}
+	}
+	if last < 0 {
+		return
+	}
+	m.cursor = last
+	m.ensureCursorVisible()
 }
 
 func (m Model) selectContextMenuItem(label string) Model {
@@ -388,24 +447,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m.updateEditInput(keyMsg)
 	}
 	if m.contextMenu != nil {
-		items := m.contextMenu.items()
-		switch keyMsg.String() {
-		case "esc":
-			m.contextMenu = nil
-		case "up", "k":
-			m.contextMenu.selected--
-			if m.contextMenu.selected < 0 {
-				m.contextMenu.selected = len(items) - 1
-			}
-		case "down", "j":
-			m.contextMenu.selected++
-			if m.contextMenu.selected >= len(items) {
-				m.contextMenu.selected = 0
-			}
-		case "enter":
-			m = m.selectContextMenuItem(items[m.contextMenu.selected])
-		}
-		return m, nil
+		return m.updateContextMenu(keyMsg)
 	}
 	var cmd tea.Cmd
 	switch keyMsg.String() {
@@ -421,11 +463,54 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.collapseCurrent()
 	case "right", "l", "enter":
 		m, cmd = m.activateCurrent()
-	case "m":
+	case "n":
 		m = m.OpenContextMenu()
 	}
 	m.ensureCursorVisible()
 	return m, cmd
+}
+
+// updateContextMenu handles keyboard input while the context menu is open:
+// arrow keys move the highlighted item (re-rendering the bordered block so
+// the highlight is visible), Enter picks it, Esc closes the menu and
+// returns the selection to the row it was anchored to.
+func (m Model) updateContextMenu(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
+	items := m.contextMenu.items()
+	switch keyMsg.String() {
+	case "esc":
+		m = m.closeContextMenu()
+	case "up", "k":
+		m.contextMenu.selected--
+		if m.contextMenu.selected < 0 {
+			m.contextMenu.selected = len(items) - 1
+		}
+		m.rebuildFlat()
+	case "down", "j":
+		m.contextMenu.selected++
+		if m.contextMenu.selected >= len(items) {
+			m.contextMenu.selected = 0
+		}
+		m.rebuildFlat()
+	case "enter":
+		m = m.selectContextMenuItem(items[m.contextMenu.selected])
+	}
+	return m, nil
+}
+
+// closeContextMenu closes the menu without acting, rebuilding the flat
+// list and returning the selection to the row the menu was anchored to
+// (or leaving it where it lands, for an empty-space-targeted menu).
+func (m Model) closeContextMenu() Model {
+	anchorPath := m.contextMenu.targetPath
+	m.contextMenu = nil
+	m.rebuildFlat()
+	if anchorPath != "" {
+		if idx := m.indexOfNode(anchorPath); idx >= 0 {
+			m.cursor = idx
+		}
+	}
+	m.ensureCursorVisible()
+	return m
 }
 
 // ensureCursorVisible scrolls the viewport so the selected item stays
@@ -472,15 +557,12 @@ func (m *Model) collapseCurrent() {
 // a no-op.
 func (m Model) HandleClick(y int) (Model, tea.Cmd) {
 	if m.contextMenu != nil {
-		items := m.contextMenu.items()
-		if m.height > 0 && len(items) > m.height {
-			items = items[:m.height]
+		idx := m.scrollOffset + y
+		if idx >= 0 && idx < len(m.flat) && m.flat[idx].menuItemIdx >= 0 {
+			items := m.contextMenu.items()
+			return m.selectContextMenuItem(items[m.flat[idx].menuItemIdx]), nil
 		}
-		if y >= 0 && y < len(items) {
-			return m.selectContextMenuItem(items[y]), nil
-		}
-		m.contextMenu = nil
-		return m, nil
+		return m.closeContextMenu(), nil
 	}
 	if m.mode != editNone {
 		m.mode = editNone
@@ -539,18 +621,7 @@ func (m Model) activateCurrent() (Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	var menuItems []string
-	if m.contextMenu != nil {
-		menuItems = m.contextMenu.items()
-	}
 	clip := m.height > 0
-	if clip && len(menuItems) > m.height {
-		menuItems = menuItems[:m.height]
-	}
-	realHeight := m.height - len(menuItems)
-	if realHeight < 0 {
-		realHeight = 0
-	}
 	viewStart, viewEnd := 0, len(m.flat)
 	if clip {
 		viewStart = m.scrollOffset
@@ -560,12 +631,9 @@ func (m Model) View() string {
 		if viewStart > len(m.flat) {
 			viewStart = len(m.flat)
 		}
-		viewEnd = viewStart + realHeight
+		viewEnd = viewStart + m.height
 		if viewEnd > len(m.flat) {
 			viewEnd = len(m.flat)
-		}
-		if viewEnd < viewStart {
-			viewEnd = viewStart
 		}
 	}
 
@@ -580,18 +648,13 @@ func (m Model) View() string {
 	}
 
 	var b strings.Builder
-	for i, label := range menuItems {
-		prefix := "  "
-		if m.contextMenu != nil && i == m.contextMenu.selected {
-			prefix = "> "
-		}
-		b.WriteString(prefix + "[" + label + "]\n")
-	}
 	for idx := viewStart; idx < viewEnd; idx++ {
 		item := m.flat[idx]
 		prefix := strings.Repeat("  ", item.depth)
 		var line string
 		switch {
+		case item.menuLine != "":
+			line = prefix + item.menuLine
 		case item.node == nil:
 			line = prefix + m.editInput.View()
 		case m.mode == editRenaming && item.node.Path == m.editTarget:
@@ -603,9 +666,16 @@ func (m Model) View() string {
 				line += dirtyStyle.Render(" (M)")
 			}
 		}
-		if idx == m.cursor {
+		switch {
+		case item.menuLine != "":
+			// Menu rows never show the tree's own row-selection marker —
+			// the bordered box and its own reverse-video highlight already
+			// carry that meaning; m.cursor may point at one of these rows
+			// purely to keep the whole menu scrolled into view.
+			line = "  " + line
+		case idx == m.cursor:
 			line = "> " + line
-		} else {
+		default:
 			line = "  " + line
 		}
 		if clip {

@@ -599,9 +599,10 @@ func TestHandleRightClickOnEmptySpaceTargetsRootWithNoRename(t *testing.T) {
 
 func TestClickingNewFileMenuItemStartsCreate(t *testing.T) {
 	m := setupModelWithNFiles(t, 3)
-	m = m.HandleRightClick(50) // empty space -> targets root, items = [New File, New Folder]
+	m = m.HandleRightClick(50) // empty space -> targets root, menu appended after the 3 files
 
-	m, _ = m.HandleClick(0) // row 0 of the menu = "New File"
+	// flat: file0(0) file1(1) file2(2) border(3) "New File"(4) "New Folder"(5) border(6)
+	m, _ = m.HandleClick(4) // "New File"
 
 	if m.mode != editCreatingFile {
 		t.Fatalf("got mode=%v, want editCreatingFile", m.mode)
@@ -650,8 +651,8 @@ func TestViewClipsToZeroTreeRowsWhenMenuFillsThePane(t *testing.T) {
 		t.Fatalf("got %d rendered lines, want 3 (menu fills the entire 3-row pane, leaving zero tree rows) — got view:\n%s", len(lines), view)
 	}
 	for _, l := range lines {
-		if !strings.Contains(l, "[") {
-			t.Fatalf("expected every rendered line to be a menu row when the menu consumes the whole pane, got %q", l)
+		if strings.Contains(l, ".go") {
+			t.Fatalf("expected every rendered line to be part of the menu's bordered block when it consumes the whole pane, got a tree row: %q", l)
 		}
 	}
 }
@@ -698,14 +699,14 @@ func TestCancelledCreateDoesNotLeaveCursorOutOfRangeAfterRebuild(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 }
 
-func TestMKeyOpensContextMenuOnSelectedRow(t *testing.T) {
+func TestNKeyOpensContextMenuOnSelectedRow(t *testing.T) {
 	m := setupModelWithNFiles(t, 3)
 	target := m.flat[0].node.Path
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 
 	if m.contextMenu == nil {
-		t.Fatal("expected 'm' to open the context menu")
+		t.Fatal("expected 'n' to open the context menu")
 	}
 	if m.contextMenu.targetPath != target {
 		t.Fatalf("got targetPath=%q, want %q (the currently selected row)", m.contextMenu.targetPath, target)
@@ -770,5 +771,32 @@ func TestEscClosesKeyboardOpenedContextMenu(t *testing.T) {
 
 	if m.contextMenu != nil {
 		t.Fatal("expected Esc to close the context menu")
+	}
+}
+
+func TestContextMenuIsAnchoredImmediatelyBelowTheClickedRowNotAtTheTop(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.HandleRightClick(1) // targets file01.go
+
+	// The menu's bordered block must be spliced in right after the row it
+	// targets, not rendered at the top of the tree ahead of file00.go.
+	if m.flat[0].menuLine != "" || m.flat[0].node == nil || m.flat[0].node.Name != "file00.go" {
+		t.Fatalf("expected row 0 to still be file00.go, got node=%v menuLine=%q", m.flat[0].node, m.flat[0].menuLine)
+	}
+	if m.flat[1].node == nil || m.flat[1].node.Name != "file01.go" {
+		t.Fatalf("expected row 1 to still be file01.go (the clicked row), got %v", m.flat[1].node)
+	}
+	if m.flat[2].menuLine == "" {
+		t.Fatal("expected the menu's bordered block to start immediately after the clicked row")
+	}
+}
+
+func TestContextMenuRendersWithABorder(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	m = m.HandleRightClick(0)
+
+	view := m.View()
+	if !strings.ContainsAny(view, "┌┐└┘") {
+		t.Fatalf("expected the context menu to render with a visible border, got view:\n%s", view)
 	}
 }
