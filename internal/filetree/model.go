@@ -2,6 +2,7 @@ package filetree
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -71,6 +72,60 @@ func (m Model) SetSize(width, height int) Model {
 // changes, so View() can show a modified indicator next to their name.
 func (m Model) SetDirty(dirty map[string]bool) Model {
 	m.dirty = dirty
+	return m
+}
+
+// SelectedDir returns the directory context for creating a new file/folder:
+// the selected node itself if it's a directory, its parent otherwise. Falls
+// back to the tree's root when nothing is selected (e.g. an empty tree).
+func (m Model) SelectedDir() string {
+	if len(m.flat) == 0 || m.cursor < 0 || m.cursor >= len(m.flat) {
+		return m.root.Path
+	}
+	n := m.flat[m.cursor].node
+	if n.Type == NodeDir {
+		return n.Path
+	}
+	return filepath.Dir(n.Path)
+}
+
+// findNode returns the tracked *Node at path, or nil if the tree has never
+// loaded that far (e.g. an ancestor directory was never expanded).
+func (m Model) findNode(path string) *Node {
+	if m.root.Path == path {
+		return m.root
+	}
+	var find func(n *Node) *Node
+	find = func(n *Node) *Node {
+		for _, c := range n.Children {
+			if c.Path == path {
+				return c
+			}
+			if c.Type == NodeDir {
+				if found := find(c); found != nil {
+					return found
+				}
+			}
+		}
+		return nil
+	}
+	return find(m.root)
+}
+
+// ReloadDir refreshes dirPath's children (auto-expanding it so a newly
+// created entry is immediately visible) and rebuilds the flat list. A no-op
+// if dirPath isn't currently tracked (e.g. it was never expanded) — the new
+// entry will show correctly the first time the directory is expanded
+// anyway, since LoadChildren always does a fresh read on first expansion.
+func (m Model) ReloadDir(dirPath string) Model {
+	n := m.findNode(dirPath)
+	if n == nil {
+		return m
+	}
+	n.Expanded = true
+	n.Reload()
+	m.rebuildFlat()
+	m.ensureCursorVisible()
 	return m
 }
 

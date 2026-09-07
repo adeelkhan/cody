@@ -273,3 +273,72 @@ func TestSetDirtyWithEmptyMapShowsNoIndicators(t *testing.T) {
 		t.Fatal("expected no modified indicators when SetDirty was never called")
 	}
 }
+
+func TestSelectedDirOnADirectoryReturnsItself(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "sub" is the only (directory) entry, so it's at flat index 0.
+	if got := m.SelectedDir(); got != filepath.Join(dir, "sub") {
+		t.Fatalf("got %q, want %q", got, filepath.Join(dir, "sub"))
+	}
+}
+
+func TestSelectedDirOnAFileReturnsItsParent(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	got := m.SelectedDir()
+	want := filepath.Dir(m.flat[0].node.Path)
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestSelectedDirOnEmptyTreeReturnsRoot(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.SelectedDir(); got != dir {
+		t.Fatalf("got %q, want %q (root, empty tree)", got, dir)
+	}
+}
+
+func TestReloadDirAddsNewEntryAndAutoExpands(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(sub, "new.go"), "")
+
+	m = m.ReloadDir(sub)
+
+	found := false
+	for _, item := range m.flat {
+		if item.node.Path == filepath.Join(sub, "new.go") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected the new file to appear in the flat list after ReloadDir")
+	}
+}
+
+func TestReloadDirOnUnknownPathIsANoOp(t *testing.T) {
+	m := setupModelWithNFiles(t, 3)
+	before := len(m.flat)
+	m = m.ReloadDir("/some/path/never/tracked")
+	if len(m.flat) != before {
+		t.Fatalf("got %d flat items, want %d (unchanged)", len(m.flat), before)
+	}
+}
