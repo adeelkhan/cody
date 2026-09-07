@@ -50,7 +50,7 @@ func findLabel(name string) (menuLabel, bool) {
 func menuItemsFor(menu string) []string {
 	switch menu {
 	case "File":
-		return []string{"Open", "Save"}
+		return []string{"New", "Open", "Save"}
 	case "Edit":
 		return []string{"Cut", "Paste", "Copy", "Save"}
 	}

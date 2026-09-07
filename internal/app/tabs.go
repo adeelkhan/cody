@@ -12,6 +12,17 @@ var (
 	dirtyTabText = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
 
+// tabDisplayName returns the name shown for a tab: "Untitled" for a
+// pathless (never-saved) tab created via Ctrl+N, filepath.Base(path)
+// otherwise — filepath.Base("") returns "." which would otherwise show up
+// as a nonsensical tab label.
+func tabDisplayName(path string) string {
+	if path == "" {
+		return "Untitled"
+	}
+	return filepath.Base(path)
+}
+
 // tabRegion describes one tab's clickable column range within the rendered
 // tab bar (startCol/endCol, half-open, close glyph included), and the
 // sub-range within it (closeStart/closeEnd) that is its close glyph.
@@ -26,7 +37,7 @@ type tabRegion struct {
 // length as what renderTabBar actually draws for that tab, or clicks will
 // land on the wrong tab.
 func tabPlainLabel(t tab) string {
-	name := filepath.Base(t.path)
+	name := tabDisplayName(t.path)
 	suffix := ""
 	if t.editor.HasUnsavedChanges() {
 		suffix = " (M)"
@@ -93,7 +104,7 @@ func tabAt(col int, tabs []tab, width int) (tabRegion, bool) {
 func renderTabBar(width int, tabs []tab, activeTab int) string {
 	var b strings.Builder
 	for i, t := range tabs {
-		name := filepath.Base(t.path)
+		name := tabDisplayName(t.path)
 		dirty := t.editor.HasUnsavedChanges()
 		main := " " + name
 		if i == activeTab {

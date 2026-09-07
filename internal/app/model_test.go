@@ -173,9 +173,9 @@ func TestMouseClickFileOpenThenTypeThenLoadsFile(t *testing.T) {
 		t.Fatalf("got openMenu=%q, want File", m.openMenu)
 	}
 
-	// Click "Open" (first item in the File dropdown; y=2 skips the menu bar
-	// row and the dropdown's own top border row).
-	updated, _ = m.Update(tea.MouseMsg{X: 0, Y: 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	// Click "Open" (second item in the File dropdown, after "New"; y=3 skips
+	// the menu bar row, the dropdown's own top border row, and "New"'s row).
+	updated, _ = m.Update(tea.MouseMsg{X: 0, Y: 3, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	m = updated.(Model)
 	if m.activeDialog != dialogFileOpen {
 		t.Fatal("expected clicking Open to activate the file-open dialog")

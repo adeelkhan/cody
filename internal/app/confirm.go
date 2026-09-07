@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -102,14 +101,14 @@ func renderConfirmDialog(width, height int, m Model) string {
 		var names []string
 		for _, t := range m.tabs {
 			if t.editor.HasUnsavedChanges() {
-				names = append(names, filepath.Base(t.path))
+				names = append(names, tabDisplayName(t.path))
 			}
 		}
 		message = fmt.Sprintf("Unsaved changes in: %s", strings.Join(names, ", "))
 	case confirmCloseTab:
 		name := "the tab"
 		if m.pendingConfirmTab >= 0 && m.pendingConfirmTab < len(m.tabs) {
-			name = filepath.Base(m.tabs[m.pendingConfirmTab].path)
+			name = tabDisplayName(m.tabs[m.pendingConfirmTab].path)
 		}
 		message = fmt.Sprintf("%s has unsaved changes.", name)
 	}

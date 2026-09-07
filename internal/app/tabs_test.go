@@ -11,6 +11,18 @@ import (
 	"cody/internal/editor"
 )
 
+func TestTabDisplayNameForUntitledTab(t *testing.T) {
+	if got := tabDisplayName(""); got != "Untitled" {
+		t.Fatalf("got %q, want %q", got, "Untitled")
+	}
+}
+
+func TestTabDisplayNameForRealPath(t *testing.T) {
+	if got := tabDisplayName("/a/b/c.go"); got != "c.go" {
+		t.Fatalf("got %q, want %q", got, "c.go")
+	}
+}
+
 func TestTabRegionsAreContiguousAndOrdered(t *testing.T) {
 	tabs := []tab{{path: "/a.go"}, {path: "/bb.go"}, {path: "/ccc.go"}}
 	regions := tabRegions(tabs, 200)

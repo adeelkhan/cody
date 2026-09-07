@@ -77,6 +77,12 @@ type Model struct {
 	pendingConfirm    confirmAction
 	pendingConfirmTab int // meaningful only when pendingConfirm == confirmCloseTab
 	confirmCursor     int // 0 = "anyway", 1 = "Cancel"
+
+	pathPromptAction pathPromptAction
+	pathDirInput     textinput.Model
+	pathNameInput    textinput.Model
+	pathPromptFocus  int
+	pathPromptError  string
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -114,6 +120,15 @@ func (m Model) activeEditor() editor.Model {
 func (m Model) setActiveEditor(e editor.Model) Model {
 	if m.activeTab >= 0 && m.activeTab < len(m.tabs) {
 		m.tabs[m.activeTab].editor = e
+	}
+	return m
+}
+
+// setActiveTabPath rewrites the active tab's path — used once, by Save As,
+// the moment an until-then-untitled buffer is first written to disk.
+func (m Model) setActiveTabPath(path string) Model {
+	if m.activeTab >= 0 && m.activeTab < len(m.tabs) {
+		m.tabs[m.activeTab].path = path
 	}
 	return m
 }
@@ -219,6 +234,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.activeDialog == dialogConfirmDiscard {
 		return m.updateConfirmDialog(msg)
 	}
+	if m.activeDialog == dialogPathPrompt {
+		return m.updatePathPromptDialog(msg)
+	}
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
 		if msg.Action != tea.MouseActionPress {
@@ -253,7 +271,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cmd, ok := commandForShortcut(m.commands, msg.String()); ok {
 					return cmd.Handler(m)
 				}
-			} else if msg.String() == "ctrl+o" || msg.String() == "ctrl+q" {
+			} else if msg.String() == "ctrl+o" || msg.String() == "ctrl+q" || msg.String() == "ctrl+n" {
 				if cmd, ok := commandForShortcut(m.commands, msg.String()); ok {
 					return cmd.Handler(m)
 				}
@@ -521,6 +539,10 @@ func (m Model) View() string {
 	}
 	if m.activeDialog == dialogConfirmDiscard {
 		dialog := renderConfirmDialog(m.width, paneHeight, m)
+		return lipgloss.JoinVertical(lipgloss.Left, menuBar, dialog, status)
+	}
+	if m.activeDialog == dialogPathPrompt {
+		dialog := renderPathPromptDialog(m.width, paneHeight, m)
 		return lipgloss.JoinVertical(lipgloss.Left, menuBar, dialog, status)
 	}
 

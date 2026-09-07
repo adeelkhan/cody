@@ -1,6 +1,10 @@
 package app
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	tea "github.com/charmbracelet/bubbletea"
+
+	"cody/internal/editor"
+)
 
 type Command struct {
 	Name     string
@@ -10,6 +14,8 @@ type Command struct {
 
 func buildCommands() []Command {
 	return []Command{
+		{Name: "New", Handler: cmdNewFilePrompt},
+		{Name: "New Tab", Shortcut: "ctrl+n", Handler: cmdNewBlankTab},
 		{Name: "Open", Shortcut: "ctrl+o", Handler: cmdOpenFilePrompt},
 		{Name: "Find", Shortcut: "ctrl+f", Handler: cmdFind},
 		{Name: "Save", Shortcut: "ctrl+s", Handler: cmdSave},
@@ -33,9 +39,22 @@ func commandForShortcut(commands []Command, shortcut string) (Command, bool) {
 }
 
 func cmdSave(m Model) (Model, tea.Cmd) {
+	if m.activeEditor().IsUntitled() {
+		return openSaveAsPrompt(m)
+	}
 	e, cmd := m.activeEditor().Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m = m.setActiveEditor(e)
 	return m, cmd
+}
+
+func cmdNewBlankTab(m Model) (Model, tea.Cmd) {
+	editorW, editorH := m.newTabEditorSize()
+	e := editor.New().NewBlankBuffer().SetSize(editorW, editorH)
+	m.tabs = append(m.tabs, tab{path: "", editor: e})
+	m.activeTab = len(m.tabs) - 1
+	m.focus = focusEditor
+	m.recentCommand = "New file"
+	return m, nil
 }
 
 func cmdCut(m Model) (Model, tea.Cmd) {

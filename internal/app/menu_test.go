@@ -37,8 +37,15 @@ func TestMenuLabelAtHitsEdit(t *testing.T) {
 
 func TestMenuItemsForFile(t *testing.T) {
 	items := menuItemsFor("File")
-	if len(items) != 2 || items[0] != "Open" || items[1] != "Save" {
+	if len(items) != 3 || items[0] != "New" || items[1] != "Open" || items[2] != "Save" {
 		t.Fatalf("got %v", items)
+	}
+}
+
+func TestMenuItemsForFileIncludesNew(t *testing.T) {
+	items := menuItemsFor("File")
+	if len(items) != 3 || items[0] != "New" || items[1] != "Open" || items[2] != "Save" {
+		t.Fatalf("got %v, want [New, Open, Save]", items)
 	}
 }
 
