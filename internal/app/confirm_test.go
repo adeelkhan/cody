@@ -31,13 +31,13 @@ func TestCloseTabOnCleanTabClosesImmediately(t *testing.T) {
 	updated, _ := m.Update(filetree.FileOpenedMsg{Path: file})
 	m = updated.(Model)
 
-	m, _ = m.closeTab(0)
+	m, _ = m.closeTab(0, 0)
 
-	if len(m.tabs) != 0 {
-		t.Fatalf("got %d tabs, want 0", len(m.tabs))
+	if len(m.panes[0].tabs) != 0 {
+		t.Fatalf("got %d tabs, want 0", len(m.panes[0].tabs))
 	}
-	if m.activeTab != -1 {
-		t.Fatalf("got activeTab=%d, want -1", m.activeTab)
+	if m.panes[0].activeTab != -1 {
+		t.Fatalf("got activeTab=%d, want -1", m.panes[0].activeTab)
 	}
 	if m.focus != focusTree {
 		t.Fatal("expected focus to fall back to the tree once the last tab closes")
@@ -68,16 +68,16 @@ func TestCloseTabReassignsActiveTabCorrectly(t *testing.T) {
 	// 3 tabs open, activeTab == 2 (c.go).
 
 	// Closing a tab before the active one shifts activeTab left by one.
-	m, _ = m.closeTab(0)
-	if m.activeTab != 1 {
-		t.Fatalf("got activeTab=%d, want 1 after closing a tab before it", m.activeTab)
+	m, _ = m.closeTab(0, 0)
+	if m.panes[0].activeTab != 1 {
+		t.Fatalf("got activeTab=%d, want 1 after closing a tab before it", m.panes[0].activeTab)
 	}
 
 	// Now 2 tabs remain (b.go, c.go), activeTab == 1 (c.go, the last one).
 	// Closing the active (last) tab falls back to the one before it.
-	m, _ = m.closeTab(1)
-	if m.activeTab != 0 {
-		t.Fatalf("got activeTab=%d, want 0 after closing the active last tab", m.activeTab)
+	m, _ = m.closeTab(0, 1)
+	if m.panes[0].activeTab != 0 {
+		t.Fatalf("got activeTab=%d, want 0 after closing the active last tab", m.panes[0].activeTab)
 	}
 }
 
@@ -106,24 +106,24 @@ func TestCloseTabReassignsActiveTabWhenLaterTabExists(t *testing.T) {
 	// it (c.go at index 2).
 	updated, _ := m.Update(filetree.FileOpenedMsg{Path: files[1]})
 	m = updated.(Model)
-	if m.activeTab != 1 {
-		t.Fatalf("got activeTab=%d, want 1 after switching back to b.go", m.activeTab)
+	if m.panes[0].activeTab != 1 {
+		t.Fatalf("got activeTab=%d, want 1 after switching back to b.go", m.panes[0].activeTab)
 	}
-	if len(m.tabs) != 3 {
-		t.Fatalf("got %d tabs, want 3 (no duplicate from re-opening b.go)", len(m.tabs))
+	if len(m.panes[0].tabs) != 3 {
+		t.Fatalf("got %d tabs, want 3 (no duplicate from re-opening b.go)", len(m.panes[0].tabs))
 	}
 
 	// Closing the active tab (b.go) that has a later tab (c.go) shifts
 	// that later tab left into the closed slot, so activeTab stays at 1.
-	m, _ = m.closeTab(1)
-	if m.activeTab != 1 {
-		t.Fatalf("got activeTab=%d, want 1 after closing the active tab with a later tab present", m.activeTab)
+	m, _ = m.closeTab(0, 1)
+	if m.panes[0].activeTab != 1 {
+		t.Fatalf("got activeTab=%d, want 1 after closing the active tab with a later tab present", m.panes[0].activeTab)
 	}
-	if len(m.tabs) != 2 {
-		t.Fatalf("got %d tabs, want 2", len(m.tabs))
+	if len(m.panes[0].tabs) != 2 {
+		t.Fatalf("got %d tabs, want 2", len(m.panes[0].tabs))
 	}
-	if m.tabs[m.activeTab].path != files[2] {
-		t.Fatalf("got active tab path=%q, want %q (c.go)", m.tabs[m.activeTab].path, files[2])
+	if m.panes[0].tabs[m.panes[0].activeTab].path != files[2] {
+		t.Fatalf("got active tab path=%q, want %q (c.go)", m.panes[0].tabs[m.panes[0].activeTab].path, files[2])
 	}
 }
 
@@ -139,7 +139,7 @@ func TestCloseTabOnDirtyTabOpensConfirmDialog(t *testing.T) {
 	}
 	m = openAndDirtyFile(t, m, file)
 
-	m, _ = m.closeTab(0)
+	m, _ = m.closeTab(0, 0)
 
 	if m.activeDialog != dialogConfirmDiscard {
 		t.Fatal("expected closing a dirty tab to open the confirm dialog")
@@ -150,7 +150,7 @@ func TestCloseTabOnDirtyTabOpensConfirmDialog(t *testing.T) {
 	if m.pendingConfirmTab != 0 {
 		t.Fatalf("got pendingConfirmTab=%d, want 0", m.pendingConfirmTab)
 	}
-	if len(m.tabs) != 1 {
+	if len(m.panes[0].tabs) != 1 {
 		t.Fatal("expected the tab to remain open until confirmed")
 	}
 }
@@ -166,12 +166,12 @@ func TestConfirmDialogConfirmingCloseTabRemovesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	m = openAndDirtyFile(t, m, file)
-	m, _ = m.closeTab(0)
+	m, _ = m.closeTab(0, 0)
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 
-	if len(m.tabs) != 0 {
+	if len(m.panes[0].tabs) != 0 {
 		t.Fatal("expected confirming to remove the tab")
 	}
 	if m.activeDialog != dialogNone {
@@ -190,12 +190,12 @@ func TestConfirmDialogCancelingLeavesTabOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	m = openAndDirtyFile(t, m, file)
-	m, _ = m.closeTab(0)
+	m, _ = m.closeTab(0, 0)
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(Model)
 
-	if len(m.tabs) != 1 {
+	if len(m.panes[0].tabs) != 1 {
 		t.Fatal("expected canceling to leave the tab open")
 	}
 	if m.activeDialog != dialogNone {
@@ -294,7 +294,7 @@ func TestConfirmDialogCancelingQuitReturnsToEditingWithTabIntact(t *testing.T) {
 	if m.activeDialog != dialogNone {
 		t.Fatal("expected canceling to close the dialog")
 	}
-	if len(m.tabs) != 1 || !m.tabs[0].editor.HasUnsavedChanges() {
+	if len(m.panes[0].tabs) != 1 || !m.panes[0].tabs[0].editor.HasUnsavedChanges() {
 		t.Fatal("expected the dirty tab to remain open and dirty after canceling quit")
 	}
 }

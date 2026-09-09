@@ -18,43 +18,81 @@ const (
 	confirmCloseTab
 )
 
-// closeTab removes the tab at index. If it has unsaved changes, this opens
-// a confirmation dialog instead of closing immediately; the actual removal
-// then happens from updateConfirmDialog once the user confirms. A no-op
-// for an out-of-range index.
-func (m Model) closeTab(index int) (Model, tea.Cmd) {
-	if index < 0 || index >= len(m.tabs) {
+// closeTab removes the tab at (pane, index). If it has unsaved changes,
+// this opens a confirmation dialog instead of closing immediately; the
+// actual removal then happens from updateConfirmDialog once the user
+// confirms. A no-op for an out-of-range pane or index.
+func (m Model) closeTab(pane, index int) (Model, tea.Cmd) {
+	if pane < 0 || pane >= len(m.panes) {
 		return m, nil
 	}
-	if m.tabs[index].editor.HasUnsavedChanges() {
+	if index < 0 || index >= len(m.panes[pane].tabs) {
+		return m, nil
+	}
+	if m.panes[pane].tabs[index].editor.HasUnsavedChanges() {
 		m.activeDialog = dialogConfirmDiscard
 		m.pendingConfirm = confirmCloseTab
+		m.pendingConfirmPane = pane
 		m.pendingConfirmTab = index
 		m.confirmCursor = 0
 		return m, nil
 	}
-	return m.removeTab(index), nil
+	return m.removeTab(pane, index), nil
 }
 
-// removeTab unconditionally removes the tab at index and reassigns
-// activeTab: closing the active tab prefers the tab that shifted into its
-// slot (the one that was to its right), falling back to the one before it
-// if the closed tab was last; closing a tab is otherwise a no-op on
-// activeTab unless the removal shifted it left.
-func (m Model) removeTab(index int) Model {
-	if index < 0 || index >= len(m.tabs) {
+// removeTab unconditionally removes the tab at (pane, index) and
+// reassigns that pane's activeTab: closing the active tab prefers the tab
+// that shifted into its slot (the one that was to its right), falling
+// back to the one before it if the closed tab was last; closing a tab is
+// otherwise a no-op on activeTab unless the removal shifted it left.
+//
+// If this leaves a pane empty while a split exists (len(m.panes) == 2),
+// the layout collapses back to a single pane — the one place this rule
+// lives, covering both directions:
+//   - pane 1 emptied: drop panes[1] entirely, activePane = 0.
+//   - pane 0 emptied and pane 1 still has tabs: panes[0] = panes[1] (the
+//     survivor moves into the slot View() always treats as "the" pane in
+//     unsplit mode), then drop the now-duplicated panes[1], activePane = 0.
+//   - both empty (defensive only — not reachable via a single removeTab
+//     call in normal use): fall back to a single fresh empty pane.
+func (m Model) removeTab(pane, index int) Model {
+	if pane < 0 || pane >= len(m.panes) {
 		return m
 	}
-	m.tabs = append(m.tabs[:index], m.tabs[index+1:]...)
+	if index < 0 || index >= len(m.panes[pane].tabs) {
+		return m
+	}
+	p := &m.panes[pane]
+	p.tabs = append(p.tabs[:index], p.tabs[index+1:]...)
 	switch {
-	case len(m.tabs) == 0:
-		m.activeTab = -1
-		m.focus = focusTree
-	case index < m.activeTab:
-		m.activeTab--
-	case index == m.activeTab:
-		if m.activeTab >= len(m.tabs) {
-			m.activeTab--
+	case len(p.tabs) == 0:
+		p.activeTab = -1
+		if len(m.panes) == 1 {
+			m.focus = focusTree
+		}
+	case index < p.activeTab:
+		p.activeTab--
+	case index == p.activeTab:
+		if p.activeTab >= len(p.tabs) {
+			p.activeTab--
+		}
+	}
+
+	if len(m.panes) == 2 {
+		emptied0 := len(m.panes[0].tabs) == 0
+		emptied1 := len(m.panes[1].tabs) == 0
+		switch {
+		case emptied0 && emptied1:
+			m.panes = []editorPane{{activeTab: -1}}
+			m.activePane = 0
+			m.focus = focusTree
+		case emptied1:
+			m.panes = m.panes[:1]
+			m.activePane = 0
+		case emptied0:
+			m.panes[0] = m.panes[1]
+			m.panes = m.panes[:1]
+			m.activePane = 0
 		}
 	}
 	return m
@@ -75,6 +113,7 @@ func (m Model) updateConfirmDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		action := m.pendingConfirm
+		paneIdx := m.pendingConfirmPane
 		tabIdx := m.pendingConfirmTab
 		confirmed := m.confirmCursor == 0
 		m.activeDialog = dialogNone
@@ -87,7 +126,7 @@ func (m Model) updateConfirmDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.terminal.Close()
 			return m, tea.Quit
 		case confirmCloseTab:
-			m = m.removeTab(tabIdx)
+			m = m.removeTab(paneIdx, tabIdx)
 			return m, nil
 		}
 	}
@@ -99,16 +138,21 @@ func renderConfirmDialog(width, height int, m Model) string {
 	switch m.pendingConfirm {
 	case confirmQuit:
 		var names []string
-		for _, t := range m.tabs {
-			if t.editor.HasUnsavedChanges() {
-				names = append(names, tabDisplayName(t.path))
+		for _, p := range m.panes {
+			for _, t := range p.tabs {
+				if t.editor.HasUnsavedChanges() {
+					names = append(names, tabDisplayName(t.path))
+				}
 			}
 		}
 		message = fmt.Sprintf("Unsaved changes in: %s", strings.Join(names, ", "))
 	case confirmCloseTab:
 		name := "the tab"
-		if m.pendingConfirmTab >= 0 && m.pendingConfirmTab < len(m.tabs) {
-			name = tabDisplayName(m.tabs[m.pendingConfirmTab].path)
+		if m.pendingConfirmPane >= 0 && m.pendingConfirmPane < len(m.panes) {
+			p := m.panes[m.pendingConfirmPane]
+			if m.pendingConfirmTab >= 0 && m.pendingConfirmTab < len(p.tabs) {
+				name = tabDisplayName(p.tabs[m.pendingConfirmTab].path)
+			}
 		}
 		message = fmt.Sprintf("%s has unsaved changes.", name)
 	}

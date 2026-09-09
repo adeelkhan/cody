@@ -72,10 +72,18 @@ type tab struct {
 	editor editor.Model
 }
 
+// editorPane is one editor group: its own open tabs and which one is
+// active. len(app.Model.panes) == 1 means a single unsplit editor area;
+// == 2 means the editor area is split left/right, panes[0] on the left.
+type editorPane struct {
+	tabs      []tab
+	activeTab int // -1 when this pane has no tabs open
+}
+
 type Model struct {
 	tree          filetree.Model
-	tabs          []tab
-	activeTab     int // -1 when no tabs are open
+	panes         []editorPane // len 1 (unsplit) or 2 (split); never 0
+	activePane    int          // which pane index keyboard/mouse edits target
 	terminal      terminal.Model
 	focus         focusArea
 	projectName   string
@@ -94,16 +102,17 @@ type Model struct {
 	treeWidth      int
 	terminalHeight int
 	resizeDrag     resizeKind
-	activeDialog  dialogKind
-	fileOpenInput textinput.Model
-	fileOpenError string
-	paletteFilter textinput.Model
-	paletteCursor int
-	searchInput   textinput.Model
+	activeDialog   dialogKind
+	fileOpenInput  textinput.Model
+	fileOpenError  string
+	paletteFilter  textinput.Model
+	paletteCursor  int
+	searchInput    textinput.Model
 
-	pendingConfirm    confirmAction
-	pendingConfirmTab int // meaningful only when pendingConfirm == confirmCloseTab
-	confirmCursor     int // 0 = "anyway", 1 = "Cancel"
+	pendingConfirm     confirmAction
+	pendingConfirmPane int // meaningful only when pendingConfirm == confirmCloseTab
+	pendingConfirmTab  int // meaningful only when pendingConfirm == confirmCloseTab
+	confirmCursor      int // 0 = "anyway", 1 = "Cancel"
 
 	pathPromptAction pathPromptAction
 	pathDirInput     textinput.Model
@@ -123,7 +132,8 @@ func New(rootPath string, nerdFont bool) (Model, error) {
 	}
 	return Model{
 		tree:           tree,
-		activeTab:      -1,
+		panes:          []editorPane{{activeTab: -1}},
+		activePane:     0,
 		terminal:       terminal.New(),
 		focus:          focusTree,
 		projectName:    filepath.Base(absPath),
@@ -134,40 +144,47 @@ func New(rootPath string, nerdFont bool) (Model, error) {
 	}, nil
 }
 
-// activeEditor returns the active tab's editor, or a zero-value
-// editor.Model (HasBuffer() == false, matching "no file open yet") when no
-// tabs are open.
+// activeEditor returns the active pane's active tab's editor, or a
+// zero-value editor.Model (HasBuffer() == false, matching "no file open
+// yet") when that pane has no tabs open.
 func (m Model) activeEditor() editor.Model {
-	if m.activeTab < 0 || m.activeTab >= len(m.tabs) {
+	p := m.panes[m.activePane]
+	if p.activeTab < 0 || p.activeTab >= len(p.tabs) {
 		return editor.Model{}
 	}
-	return m.tabs[m.activeTab].editor
+	return p.tabs[p.activeTab].editor
 }
 
-// setActiveEditor writes e back into the active tab. A no-op when no tabs
-// are open (mirrors activeEditor's zero-value fallback).
+// setActiveEditor writes e back into the active pane's active tab. A no-op
+// when that pane has no tabs open (mirrors activeEditor's zero-value
+// fallback).
 func (m Model) setActiveEditor(e editor.Model) Model {
-	if m.activeTab >= 0 && m.activeTab < len(m.tabs) {
-		m.tabs[m.activeTab].editor = e
+	p := &m.panes[m.activePane]
+	if p.activeTab >= 0 && p.activeTab < len(p.tabs) {
+		p.tabs[p.activeTab].editor = e
 	}
 	return m
 }
 
-// setActiveTabPath rewrites the active tab's path — used once, by Save As,
-// the moment an until-then-untitled buffer is first written to disk.
+// setActiveTabPath rewrites the active pane's active tab's path — used
+// once, by Save As, the moment an until-then-untitled buffer is first
+// written to disk.
 func (m Model) setActiveTabPath(path string) Model {
-	if m.activeTab >= 0 && m.activeTab < len(m.tabs) {
-		m.tabs[m.activeTab].path = path
+	p := &m.panes[m.activePane]
+	if p.activeTab >= 0 && p.activeTab < len(p.tabs) {
+		p.tabs[p.activeTab].path = path
 	}
 	return m
 }
 
-// tabBarH returns the tab bar's current height: tabBarHeight once at least
-// one tab is open, 0 otherwise. Centralizes logic that used to be repeated
-// (and could drift) across paneLayout, Update's WindowSizeMsg branch, and
-// View().
+// tabBarH returns the tab bar's current height: tabBarHeight once pane 0
+// has at least one open tab, 0 otherwise. Pane 0 alone is sufficient to
+// check even once a split exists — the collapse rule in removeTab
+// guarantees pane 0 is never empty while any pane is. Centralizes logic
+// that used to be repeated (and could drift) across paneLayout, Update's
+// WindowSizeMsg branch, and View().
 func (m Model) tabBarH() int {
-	if len(m.tabs) > 0 {
+	if len(m.panes[0].tabs) > 0 {
 		return tabBarHeight
 	}
 	return 0
@@ -191,20 +208,26 @@ func (m Model) newTabEditorSize() (width, height int) {
 }
 
 // openOrSwitch opens path in a new tab, or switches to its existing tab if
-// one is already open for that path — never creates a duplicate. On
-// failure to load a new file, m is returned unchanged (matching the
-// previous single-tab LoadFile-failure behavior) along with the error.
-// editorW/editorH size the new tab's editor immediately (via SetSize)
-// instead of leaving it at zero size until the next WindowSizeMsg — a
-// background tab (or one just opened, before any resize) that's never been
-// sized treats itself as "unbounded" (see editor.Model's height <= 0
-// guards), which breaks its scroll-offset math for click-to-position and
-// wheel-scroll once it's later switched to or clicked in.
+// one is already open for that path in ANY pane — never creates a
+// duplicate, and never leaves the same file open as two independently-
+// diverging tabs in two panes at once. On failure to load a new file, m is
+// returned unchanged (matching the previous single-tab LoadFile-failure
+// behavior) along with the error. A brand new tab is appended to the
+// active pane. editorW/editorH size the new tab's editor immediately (via
+// SetSize) instead of leaving it at zero size until the next
+// WindowSizeMsg — a background tab (or one just opened, before any
+// resize) that's never been sized treats itself as "unbounded" (see
+// editor.Model's height <= 0 guards), which breaks its scroll-offset math
+// for click-to-position and wheel-scroll once it's later switched to or
+// clicked in.
 func (m Model) openOrSwitch(path string, editorW, editorH int) (Model, error) {
-	for i, t := range m.tabs {
-		if t.path == path {
-			m.activeTab = i
-			return m, nil
+	for pi := range m.panes {
+		for i, t := range m.panes[pi].tabs {
+			if t.path == path {
+				m.activePane = pi
+				m.panes[pi].activeTab = i
+				return m, nil
+			}
 		}
 	}
 	editorModel, err := editor.New().LoadFile(path)
@@ -212,8 +235,9 @@ func (m Model) openOrSwitch(path string, editorW, editorH int) (Model, error) {
 		return m, err
 	}
 	editorModel = editorModel.SetSize(editorW, editorH)
-	m.tabs = append(m.tabs, tab{path: path, editor: editorModel})
-	m.activeTab = len(m.tabs) - 1
+	p := &m.panes[m.activePane]
+	p.tabs = append(p.tabs, tab{path: path, editor: editorModel})
+	p.activeTab = len(p.tabs) - 1
 	return m, nil
 }
 
@@ -239,12 +263,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// degrading gracefully.
 		editorW := max(0, m.width-m.treeWidth-borderSize)
 		m.tree = m.tree.SetSize(max(0, m.treeWidth-borderSize), max(0, paneHeight-borderSize))
-		// Size every open tab's editor, not just the active one: a
-		// background tab left at its stale (or zero) size would treat
-		// itself as "unbounded" once switched to or clicked in, breaking
-		// its scroll-offset math (see openOrSwitch's doc comment).
-		for i := range m.tabs {
-			m.tabs[i].editor = m.tabs[i].editor.SetSize(editorW, max(0, editorHeight-borderSize))
+		// Size every open tab's editor in every pane, not just the active
+		// one: a background tab left at its stale (or zero) size would
+		// treat itself as "unbounded" once switched to or clicked in,
+		// breaking its scroll-offset math (see openOrSwitch's doc
+		// comment). Task 3 makes editorW pane-specific; for now (single
+		// pane) every pane shares the same width.
+		for pi := range m.panes {
+			for i := range m.panes[pi].tabs {
+				m.panes[pi].tabs[i].editor = m.panes[pi].tabs[i].editor.SetSize(editorW, max(0, editorHeight-borderSize))
+			}
 		}
 		m.terminal = m.terminal.SetSize(editorW, max(0, m.terminalHeight-borderSize))
 		return m, nil
@@ -455,14 +483,14 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tabBarRect.contains(x, y):
 		relX := x - tabBarRect.x0
-		region, ok := tabAt(relX, m.tabs, tabBarRect.x1-tabBarRect.x0)
+		region, ok := tabAt(relX, m.panes[0].tabs, tabBarRect.x1-tabBarRect.x0)
 		if !ok {
 			return m, nil
 		}
 		if relX >= region.closeStart && relX < region.closeEnd {
-			return m.closeTab(region.tabIndex)
+			return m.closeTab(0, region.tabIndex)
 		}
-		m.activeTab = region.tabIndex
+		m.panes[0].activeTab = region.tabIndex
 		m.focus = focusEditor
 		return m, nil
 	case editorRect.contains(x, y):
@@ -718,9 +746,11 @@ func (m Model) View() string {
 	// stale height would let a pane's content silently overflow its box,
 	// since Lip Gloss's Height() only sets a minimum, never a max.
 	dirty := map[string]bool{}
-	for _, t := range m.tabs {
-		if t.path != "" && t.editor.HasUnsavedChanges() {
-			dirty[t.path] = true
+	for _, p := range m.panes {
+		for _, t := range p.tabs {
+			if t.path != "" && t.editor.HasUnsavedChanges() {
+				dirty[t.path] = true
+			}
 		}
 	}
 	// Floored at 0 before reaching any pane's SetSize: a window smaller
@@ -738,7 +768,7 @@ func (m Model) View() string {
 	term := m.terminal.SetSize(max(0, termWidth), max(0, termHeight))
 
 	var rightSections []string
-	if len(m.tabs) > 0 {
+	if len(m.panes[0].tabs) > 0 {
 		// The tab bar has no border of its own, so it must be rendered at
 		// the same on-screen width as tabBarRect (paneLayout): m.width -
 		// m.treeWidth. editorStyle's content Width(m.width-m.treeWidth-
@@ -746,7 +776,7 @@ func (m Model) View() string {
 		// borderSize back on screen — the tab bar has no border to add,
 		// so it must use the full span directly instead of subtracting
 		// borderSize again.
-		rightSections = append(rightSections, renderTabBar(m.width-m.treeWidth, m.tabs, m.activeTab))
+		rightSections = append(rightSections, renderTabBar(m.width-m.treeWidth, m.panes[0].tabs, m.panes[0].activeTab))
 	}
 	rightSections = append(rightSections,
 		editorStyle.Render(clampBlockWidth(editor.View(), m.width-m.treeWidth-borderSize)),

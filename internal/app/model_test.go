@@ -932,11 +932,11 @@ func TestOpeningTwoDifferentFilesCreatesTwoTabs(t *testing.T) {
 	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
 	m = updated.(Model)
 
-	if len(m.tabs) != 2 {
-		t.Fatalf("got %d tabs, want 2", len(m.tabs))
+	if len(m.panes[0].tabs) != 2 {
+		t.Fatalf("got %d tabs, want 2", len(m.panes[0].tabs))
 	}
-	if m.activeTab != 1 {
-		t.Fatalf("got activeTab=%d, want 1 (the most recently opened)", m.activeTab)
+	if m.panes[0].activeTab != 1 {
+		t.Fatalf("got activeTab=%d, want 1 (the most recently opened)", m.panes[0].activeTab)
 	}
 }
 
@@ -966,17 +966,17 @@ func TestOpeningAnAlreadyOpenFileSwitchesInsteadOfDuplicating(t *testing.T) {
 
 	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
 	m = updated.(Model)
-	if len(m.tabs) != 2 {
-		t.Fatalf("got %d tabs, want 2 (re-opening fileA must not duplicate it)", len(m.tabs))
+	if len(m.panes[0].tabs) != 2 {
+		t.Fatalf("got %d tabs, want 2 (re-opening fileA must not duplicate it)", len(m.panes[0].tabs))
 	}
-	if m.activeTab != 0 {
-		t.Fatalf("got activeTab=%d, want 0 (fileA's existing tab)", m.activeTab)
+	if m.panes[0].activeTab != 0 {
+		t.Fatalf("got activeTab=%d, want 0 (fileA's existing tab)", m.panes[0].activeTab)
 	}
 
 	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
 	m = updated.(Model)
-	if m.activeTab != 1 {
-		t.Fatalf("got activeTab=%d, want 1 (back to fileB's existing tab)", m.activeTab)
+	if m.panes[0].activeTab != 1 {
+		t.Fatalf("got activeTab=%d, want 1 (back to fileB's existing tab)", m.panes[0].activeTab)
 	}
 	lineAfterReturn, _ := m.activeEditor().Cursor()
 	if lineAfterReturn != lineBeforeReopen {
@@ -1011,8 +1011,8 @@ func TestClickingATabLabelSwitchesActiveTab(t *testing.T) {
 	updated, _ = m.Update(tea.MouseMsg{X: 30, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	m = updated.(Model)
 
-	if m.activeTab != 0 {
-		t.Fatalf("got activeTab=%d, want 0", m.activeTab)
+	if m.panes[0].activeTab != 0 {
+		t.Fatalf("got activeTab=%d, want 0", m.panes[0].activeTab)
 	}
 	if m.focus != focusEditor {
 		t.Fatal("expected clicking a tab label to focus the editor")
@@ -1034,13 +1034,13 @@ func TestClickingATabsCloseGlyphClosesIt(t *testing.T) {
 	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
 	m = updated.(Model)
 
-	region := tabRegions(m.tabs, 200)[0]
+	region := tabRegions(m.panes[0].tabs, 200)[0]
 	// closeStart is relative to the tab bar's own x0 (defaultTreeWidth); the
 	// screen column is defaultTreeWidth + closeStart.
 	updated, _ = m.Update(tea.MouseMsg{X: defaultTreeWidth + region.closeStart, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	m = updated.(Model)
 
-	if len(m.tabs) != 0 {
+	if len(m.panes[0].tabs) != 0 {
 		t.Fatal("expected clicking the close glyph on a clean tab to close it")
 	}
 }
