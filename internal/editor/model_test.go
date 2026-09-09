@@ -1423,3 +1423,96 @@ func TestSaveAsOnWriteFailureLeavesBufferUntitled(t *testing.T) {
 		t.Fatal("expected the buffer to remain dirty after a failed SaveAs")
 	}
 }
+
+func TestCtrlRightMovesToEndOfNextWord(t *testing.T) {
+	m := setupEditor(t, "hello world")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	if m.cursorCol != 5 {
+		t.Fatalf("got cursorCol=%d, want 5 (end of \"hello\")", m.cursorCol)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	if m.cursorCol != 11 {
+		t.Fatalf("got cursorCol=%d, want 11 (end of \"world\")", m.cursorCol)
+	}
+	// Already at end of line: stays put, does not wrap to the next line.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	if m.cursorCol != 11 || m.cursorLine != 0 {
+		t.Fatalf("got line=%d col=%d, want to stay at end of line 0", m.cursorLine, m.cursorCol)
+	}
+}
+
+func TestCtrlLeftMovesToStartOfPreviousWord(t *testing.T) {
+	m := setupEditor(t, "hello world")
+	m.cursorCol = 11 // end of line
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlLeft})
+	if m.cursorCol != 6 {
+		t.Fatalf("got cursorCol=%d, want 6 (start of \"world\")", m.cursorCol)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlLeft})
+	if m.cursorCol != 0 {
+		t.Fatalf("got cursorCol=%d, want 0 (start of \"hello\")", m.cursorCol)
+	}
+	// Already at start of line: stays put, does not wrap to the previous line.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlLeft})
+	if m.cursorCol != 0 || m.cursorLine != 0 {
+		t.Fatalf("got line=%d col=%d, want to stay at start of line 0", m.cursorLine, m.cursorCol)
+	}
+}
+
+func TestCtrlLeftRightSkipPunctuationAsNonWordRuns(t *testing.T) {
+	m := setupEditor(t, "foo.bar()")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	if m.cursorCol != 3 {
+		t.Fatalf("got cursorCol=%d, want 3 (end of \"foo\")", m.cursorCol)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	if m.cursorCol != 7 {
+		t.Fatalf("got cursorCol=%d, want 7 (end of \"bar\", skipping the '.')", m.cursorCol)
+	}
+}
+
+func TestCtrlShiftRightExtendsSelectionByWord(t *testing.T) {
+	m := setupEditor(t, "hello world")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlShiftRight})
+	startLine, startCol, endLine, endCol, ok := m.selectionRange()
+	if !ok {
+		t.Fatal("expected ctrl+shift+right to start a selection")
+	}
+	if startLine != 0 || startCol != 0 || endLine != 0 || endCol != 5 {
+		t.Fatalf("got selection [%d:%d, %d:%d), want [0:0, 0:5)", startLine, startCol, endLine, endCol)
+	}
+}
+
+func TestCtrlShiftLeftExtendsSelectionByWord(t *testing.T) {
+	m := setupEditor(t, "hello world")
+	m.cursorCol = 11
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlShiftLeft})
+	startLine, startCol, endLine, endCol, ok := m.selectionRange()
+	if !ok {
+		t.Fatal("expected ctrl+shift+left to start a selection")
+	}
+	if startLine != 0 || startCol != 6 || endLine != 0 || endCol != 11 {
+		t.Fatalf("got selection [%d:%d, %d:%d), want [0:6, 0:11)", startLine, startCol, endLine, endCol)
+	}
+}
+
+func TestPlainCtrlArrowCollapsesSelection(t *testing.T) {
+	m := setupEditor(t, "hello world")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlShiftRight})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	if _, _, _, _, ok := m.selectionRange(); ok {
+		t.Fatal("expected a plain ctrl+arrow to collapse the selection, matching plain arrow's behavior")
+	}
+}
+
+func TestCtrlRightOnEmptyLineIsANoOp(t *testing.T) {
+	m := setupEditor(t, "")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	if m.cursorCol != 0 {
+		t.Fatalf("got cursorCol=%d, want 0", m.cursorCol)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlLeft})
+	if m.cursorCol != 0 {
+		t.Fatalf("got cursorCol=%d, want 0", m.cursorCol)
+	}
+}

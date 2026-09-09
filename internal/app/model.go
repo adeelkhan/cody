@@ -264,6 +264,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.terminal, cmd = m.terminal.Update(msg)
 		return m, cmd
 	}
+	if m.activeDialog != dialogNone {
+		// A left click anywhere while a modal dialog is open dismisses it,
+		// the same as Esc — these dialogs render across the full body
+		// width/height, so there's no "outside" region to distinguish;
+		// any click is treated as "cancel". Rewriting the message and
+		// letting it fall through to each dialog's own "esc" case reuses
+		// that dialog's exact cancel behavior instead of duplicating it
+		// six times.
+		if mm, ok := msg.(tea.MouseMsg); ok && mm.Action == tea.MouseActionPress && mm.Button == tea.MouseButtonLeft {
+			msg = tea.KeyMsg{Type: tea.KeyEsc}
+		}
+	}
 	if m.activeDialog == dialogFileOpen {
 		return m.updateFileOpenDialog(msg)
 	}

@@ -142,6 +142,117 @@ func TestUpdateRoutesToAboutDialogWhenActive(t *testing.T) {
 	}
 }
 
+func TestMouseClickDismissesAboutDialog(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = m.clickMenuLabel("About")
+
+	updated, _ := m.Update(tea.MouseMsg{X: 40, Y: 10, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if m.activeDialog != dialogNone {
+		t.Fatal("expected a left click to dismiss the About dialog, same as Esc")
+	}
+}
+
+func TestMouseClickDismissesSearchDialogAndClearsSearchState(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(file, []byte("foo\nbar\nfoo\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	m = updated.(Model)
+	for _, r := range "foo" {
+		updated, _ = m.updateSearchDialog(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+
+	updated, _ = m.Update(tea.MouseMsg{X: 5, Y: 5, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if m.activeDialog != dialogNone {
+		t.Fatal("expected a left click to dismiss the search dialog, same as Esc")
+	}
+	if _, status := m.activeEditor().FindNext(); status != "No matches" {
+		t.Fatalf("got %q, want \"No matches\" — the click should clear search state exactly like Esc, not just hide the dialog", status)
+	}
+}
+
+func TestMouseClickCancelsConfirmDialogWithoutConfirming(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(file, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = openAndDirtyFile(t, m, file)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	m = updated.(Model)
+	if m.activeDialog != dialogConfirmDiscard {
+		t.Fatal("setup failed: expected ctrl+q on a dirty tab to open the confirm dialog")
+	}
+
+	updated, cmd := m.Update(tea.MouseMsg{X: 5, Y: 5, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if m.activeDialog != dialogNone {
+		t.Fatal("expected a left click to close the confirm dialog")
+	}
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("expected a click to cancel (same as Esc), not confirm — it must never quit the app")
+		}
+	}
+	if len(m.tabs) != 1 || !m.tabs[0].editor.HasUnsavedChanges() {
+		t.Fatal("expected the dirty tab to remain open and dirty after the click cancels the dialog")
+	}
+}
+
+func TestMouseRightClickDoesNotDismissDialog(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = m.clickMenuLabel("About")
+
+	updated, _ := m.Update(tea.MouseMsg{X: 40, Y: 10, Button: tea.MouseButtonRight, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if m.activeDialog != dialogAbout {
+		t.Fatal("expected only a left click to dismiss a dialog")
+	}
+}
+
+func TestMouseMotionDoesNotDismissDialog(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = m.clickMenuLabel("About")
+
+	updated, _ := m.Update(tea.MouseMsg{X: 40, Y: 10, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	m = updated.(Model)
+
+	if m.activeDialog != dialogAbout {
+		t.Fatal("expected only a press (not motion) to dismiss a dialog")
+	}
+}
+
 func TestCtrlFOpensSearchDialogOnlyWithABufferOpen(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, false)

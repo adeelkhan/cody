@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -405,6 +406,18 @@ func (m Model) handleKey(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 	case "shift+right":
 		m.extendSelection()
 		m.moveRight()
+	case "ctrl+left":
+		m.selecting = false
+		m.moveWordLeft()
+	case "ctrl+right":
+		m.selecting = false
+		m.moveWordRight()
+	case "ctrl+shift+left":
+		m.extendSelection()
+		m.moveWordLeft()
+	case "ctrl+shift+right":
+		m.extendSelection()
+		m.moveWordRight()
 	case "enter":
 		m.selecting = false
 		m.pushUndo()
@@ -722,6 +735,47 @@ func (m *Model) moveRight() {
 	if m.cursorCol < len([]rune(m.buf.Lines[m.cursorLine])) {
 		m.cursorCol++
 	}
+}
+
+// isWordRune reports whether r is part of a "word" for word-wise cursor
+// movement: letters, digits, and underscore — the same class most editors
+// and readline-style line editing use for forward-word/backward-word.
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+// moveWordLeft moves the cursor to the start of the previous word on the
+// current line: skip backward over any run of non-word characters
+// immediately before the cursor, then over the word characters before
+// that. Stops at column 0; like moveLeft, never wraps to the previous
+// line.
+func (m *Model) moveWordLeft() {
+	runes := []rune(m.buf.Lines[m.cursorLine])
+	i := m.cursorCol
+	for i > 0 && !isWordRune(runes[i-1]) {
+		i--
+	}
+	for i > 0 && isWordRune(runes[i-1]) {
+		i--
+	}
+	m.cursorCol = i
+}
+
+// moveWordRight moves the cursor to the end of the next word on the
+// current line: skip forward over any run of non-word characters at the
+// cursor, then over the following word characters. Stops at end of line;
+// like moveRight, never wraps to the next line.
+func (m *Model) moveWordRight() {
+	runes := []rune(m.buf.Lines[m.cursorLine])
+	i := m.cursorCol
+	n := len(runes)
+	for i < n && !isWordRune(runes[i]) {
+		i++
+	}
+	for i < n && isWordRune(runes[i]) {
+		i++
+	}
+	m.cursorCol = i
 }
 
 func (m *Model) clampCol() {
