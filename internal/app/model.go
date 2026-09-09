@@ -92,6 +92,7 @@ type Model struct {
 	commands      []Command
 	rootPath      string
 	openMenu      string
+	tabMenu       *tabContextMenu // nil when no tab-menu is open
 
 	// treeWidth and terminalHeight are the tree and terminal panes' current
 	// on-screen sizes (border included) — mutable, unlike their
@@ -119,6 +120,8 @@ type Model struct {
 	pathNameInput    textinput.Model
 	pathPromptFocus  int
 	pathPromptError  string
+
+	splitCol int // on-screen column of the boundary between panes[0] and panes[1], meaningful only when len(panes) == 2
 }
 
 func New(rootPath string, nerdFont bool) (Model, error) {
@@ -241,6 +244,64 @@ func (m Model) openOrSwitch(path string, editorW, editorH int) (Model, error) {
 	return m, nil
 }
 
+// moveTabToOtherPane moves the tab at (pane, index) into the other pane
+// (0 <-> 1), creating panes[1] first if it doesn't exist yet — there is
+// no separate "create an empty split" operation, only "move a tab into
+// the other side, creating that side if needed."
+func (m Model) moveTabToOtherPane(pane, index int) Model {
+	if pane < 0 || pane >= len(m.panes) {
+		return m
+	}
+	if index < 0 || index >= len(m.panes[pane].tabs) {
+		return m
+	}
+	if len(m.panes) == 1 {
+		m.panes = append(m.panes, editorPane{activeTab: -1})
+		m.splitCol = m.defaultSplitCol()
+	}
+	target := 1 - pane
+	moved := m.panes[pane].tabs[index]
+	// Land the moved tab in the target pane BEFORE removing it from the
+	// source: removeTab's empty-pane collapse rule (see its own doc
+	// comment) inspects both panes' tab counts, and if target were still
+	// empty at that point (e.g. the pane we just created above, before it
+	// has anything in it), removeTab would mistake it for the emptied side
+	// and immediately collapse the split back away — undoing the move
+	// before it happens. Appending first means both panes are already in
+	// their final shape by the time removeTab's collapse check runs.
+	tp := &m.panes[target]
+	tp.tabs = append(tp.tabs, moved)
+	tp.activeTab = len(tp.tabs) - 1
+	// removeTab does the removal + activeTab reassignment + empty-pane
+	// collapse (see its own doc comment) — shared with a plain tab close
+	// rather than duplicated here. If removing the source's only tab
+	// collapsed the split away (source was pane 0's only tab, target was
+	// the pane we just created above), "target" as an index is now stale —
+	// the collapse rule always keeps the survivor in slot 0, so recompute
+	// which pane the moved tab actually ended up in.
+	m = m.removeTab(pane, index)
+	if len(m.panes) == 1 {
+		target = 0
+	}
+	m.activePane = target
+	m.focus = focusEditor
+	return m
+}
+
+// defaultSplitCol returns the on-screen column a fresh split's boundary
+// starts at: the horizontal midpoint of the editor area, clamped the same
+// way a drag would be.
+func (m Model) defaultSplitCol() int {
+	return m.clampSplitCol(m.treeWidth + (m.width-m.treeWidth)/2)
+}
+
+// clampSplitCol keeps a candidate split boundary within
+// [m.treeWidth+minEditorWidth, m.width-minEditorWidth] so dragging (or an
+// initial split) can never collapse either side below minEditorWidth.
+func (m Model) clampSplitCol(col int) int {
+	return clampInt(col, m.treeWidth+minEditorWidth, m.width-minEditorWidth)
+}
+
 func (m Model) Init() tea.Cmd {
 	return nil
 }
@@ -346,6 +407,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focusPrev()
 			return m.maybeStartTerminal()
 		case "esc":
+			if m.tabMenu != nil {
+				m.tabMenu = nil
+				return m, nil
+			}
 			if m.openMenu != "" {
 				m.openMenu = ""
 				return m, nil
@@ -396,6 +461,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleClick(x, y int) (tea.Model, tea.Cmd) {
 	if m.activeDialog != dialogNone {
+		return m, nil
+	}
+	if m.tabMenu != nil {
+		width := lipgloss.Width(renderTabMenu(*m.tabMenu, 0))
+		_, tabBarRect, _, _ := m.paneLayout()
+		startCol := tabBarRect.x0 // matches renderTabMenu's own anchor, see Task 3 for the exact anchor column
+		if x >= startCol && x < startCol+width && y == tabBarRect.y1 {
+			m = m.selectTabMenuItem(tabMenuItems(*m.tabMenu)[0])
+			return m, nil
+		}
+		m.tabMenu = nil
 		return m, nil
 	}
 	if y == 0 {
@@ -508,20 +584,29 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 }
 
 // handleRightClick opens the tree's context menu when the click landed in
-// the tree pane; a no-op everywhere else (there's nothing to right-click
-// in the editor/terminal panes in this pass) or while a dialog/dropdown is
-// open.
+// the tree pane, or the tab context menu when it landed on one of pane 0's
+// tabs (Task 3 generalizes this to every pane's tab bar; pane 1 doesn't
+// render yet); a no-op everywhere else, or while a dialog/dropdown is open.
 func (m Model) handleRightClick(x, y int) (tea.Model, tea.Cmd) {
 	if m.activeDialog != dialogNone || m.openMenu != "" {
 		return m, nil
 	}
-	treeRect, _, _, _ := m.paneLayout()
-	if !treeRect.contains(x, y) {
+	treeRect, tabBarRect, _, _ := m.paneLayout()
+	if treeRect.contains(x, y) {
+		m.focus = focusTree
+		relY := y - treeRect.y0 - 1
+		m.tree = m.tree.HandleRightClick(relY)
 		return m, nil
 	}
-	m.focus = focusTree
-	relY := y - treeRect.y0 - 1
-	m.tree = m.tree.HandleRightClick(relY)
+	if tabBarRect.contains(x, y) {
+		relX := x - tabBarRect.x0
+		region, ok := tabAt(relX, m.panes[0].tabs, tabBarRect.x1-tabBarRect.x0)
+		if !ok {
+			return m, nil
+		}
+		m.tabMenu = &tabContextMenu{pane: 0, index: region.tabIndex}
+		return m, nil
+	}
 	return m, nil
 }
 

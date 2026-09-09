@@ -1321,3 +1321,174 @@ func TestAggressiveResizeToTinyWidthDoesNotPanic(t *testing.T) {
 		t.Fatalf("got m.width=%d, want 12 (the resize itself should still apply)", m.width)
 	}
 }
+
+func TestMoveTabToOtherPaneCreatesSplitAndMovesTheTab(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	// pane 0 = [a.go, b.go], activeTab = 1 (b.go)
+
+	m = m.moveTabToOtherPane(0, 0) // move a.go right
+
+	if len(m.panes) != 2 {
+		t.Fatalf("got %d panes, want 2", len(m.panes))
+	}
+	if len(m.panes[0].tabs) != 1 || m.panes[0].tabs[0].path != fileB {
+		t.Fatalf("got pane0 tabs=%v, want just b.go", m.panes[0].tabs)
+	}
+	if len(m.panes[1].tabs) != 1 || m.panes[1].tabs[0].path != fileA {
+		t.Fatalf("got pane1 tabs=%v, want just a.go", m.panes[1].tabs)
+	}
+	if m.activePane != 1 {
+		t.Fatalf("got activePane=%d, want 1 (focus follows the moved tab)", m.activePane)
+	}
+	if m.focus != focusEditor {
+		t.Fatal("expected focus to be on the editor after the move")
+	}
+}
+
+func TestMoveTabToOtherPaneOfOnlyOpenTabCollapsesBackToOnePane(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(file, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	m = m.moveTabToOtherPane(0, 0)
+
+	if len(m.panes) != 1 {
+		t.Fatalf("got %d panes, want 1 (moving your only tab has nothing to split against)", len(m.panes))
+	}
+	if len(m.panes[0].tabs) != 1 || m.panes[0].tabs[0].path != file {
+		t.Fatalf("got pane0 tabs=%v, want the tab still there", m.panes[0].tabs)
+	}
+	if m.activePane != 0 {
+		t.Fatalf("got activePane=%d, want 0", m.activePane)
+	}
+}
+
+func TestMoveTabToOtherPaneIntoAlreadySplitPaneAppends(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	fileC := filepath.Join(dir, "c.go")
+	for _, f := range []string{fileA, fileB, fileC} {
+		if err := os.WriteFile(f, []byte("package p"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	for _, f := range []string{fileA, fileB, fileC} {
+		updated, _ = m.Update(filetree.FileOpenedMsg{Path: f})
+		m = updated.(Model)
+	}
+	// pane0 = [a, b, c]. Split: move a.go right.
+	m = m.moveTabToOtherPane(0, 0)
+	// pane0 = [b, c], pane1 = [a]. Now move b.go right too.
+	m = m.moveTabToOtherPane(0, 0)
+
+	if len(m.panes[0].tabs) != 1 || m.panes[0].tabs[0].path != fileC {
+		t.Fatalf("got pane0 tabs=%v, want just c.go", m.panes[0].tabs)
+	}
+	if len(m.panes[1].tabs) != 2 || m.panes[1].tabs[0].path != fileA || m.panes[1].tabs[1].path != fileB {
+		t.Fatalf("got pane1 tabs=%v, want [a.go, b.go] (appended, not disturbing a.go)", m.panes[1].tabs)
+	}
+}
+
+func TestMoveTabToOtherPaneCanMoveBackLeft(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 0) // pane0=[b], pane1=[a]
+
+	m = m.moveTabToOtherPane(1, 0) // move a.go back left
+
+	if len(m.panes) != 1 {
+		t.Fatalf("got %d panes, want 1 (pane1 emptied, collapses)", len(m.panes))
+	}
+	if len(m.panes[0].tabs) != 2 || m.panes[0].tabs[0].path != fileB || m.panes[0].tabs[1].path != fileA {
+		t.Fatalf("got pane0 tabs=%v, want [b.go, a.go] (b.go untouched, a.go appended back)", m.panes[0].tabs)
+	}
+	if m.activePane != 0 {
+		t.Fatalf("got activePane=%d, want 0", m.activePane)
+	}
+}
+
+func TestMoveTabToOtherPaneClosingPane0sOnlyTabWhilePane1SurvivesSwaps(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 0) // pane0=[b], pane1=[a]
+
+	// Close pane0's only remaining tab directly (not via move) — exercises
+	// removeTab's "pane 0 emptied, pane 1 survives" branch from Task 1.
+	m, _ = m.closeTab(0, 0)
+
+	if len(m.panes) != 1 {
+		t.Fatalf("got %d panes, want 1", len(m.panes))
+	}
+	if len(m.panes[0].tabs) != 1 || m.panes[0].tabs[0].path != fileA {
+		t.Fatalf("got pane0 tabs=%v, want just a.go (pane1's survivor swapped into slot 0)", m.panes[0].tabs)
+	}
+}
