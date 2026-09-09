@@ -800,8 +800,13 @@ func (m *Model) focusNext() {
 	switch m.focus {
 	case focusTree:
 		m.focus = focusEditor
+		m.activePane = 0
 	case focusEditor:
-		m.focus = focusTerminal
+		if m.activePane == 0 && len(m.panes) == 2 {
+			m.activePane = 1
+		} else {
+			m.focus = focusTerminal
+		}
 	case focusTerminal:
 		m.focus = focusTree
 	}
@@ -812,9 +817,16 @@ func (m *Model) focusPrev() {
 	case focusTree:
 		m.focus = focusTerminal
 	case focusEditor:
-		m.focus = focusTree
+		if m.activePane == 1 {
+			m.activePane = 0
+		} else {
+			m.focus = focusTree
+		}
 	case focusTerminal:
 		m.focus = focusEditor
+		if len(m.panes) == 2 {
+			m.activePane = 1
+		}
 	}
 }
 

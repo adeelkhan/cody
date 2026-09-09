@@ -1605,3 +1605,131 @@ func TestClickInPane1SwitchesActivePaneAndPositionsCursor(t *testing.T) {
 // editorGutterWidthForTest mirrors editor.editorGutterWidth (unexported,
 // different package) for tests that need to click past the gutter.
 func editorGutterWidthForTest() int { return 7 }
+
+func TestTabCyclesThroughBothPanesWhenSplit(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 0) // split; activePane=1, focus=editor
+
+	// Tab: editor(pane1) -> terminal (pane1 was already the "last" editor
+	// stop reached by the split, so the very next Tab leaves the editor).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.focus != focusTerminal {
+		t.Fatalf("got focus=%v, want focusTerminal", m.focus)
+	}
+
+	// Tab: terminal -> tree -> editor(pane0) -> editor(pane1) -> terminal
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> tree
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> editor, pane0
+	m = updated.(Model)
+	if m.focus != focusEditor || m.activePane != 0 {
+		t.Fatalf("got focus=%v activePane=%d, want focusEditor/0", m.focus, m.activePane)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> editor, pane1
+	m = updated.(Model)
+	if m.focus != focusEditor || m.activePane != 1 {
+		t.Fatalf("got focus=%v activePane=%d, want focusEditor/1", m.focus, m.activePane)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> terminal
+	m = updated.(Model)
+	if m.focus != focusTerminal {
+		t.Fatalf("got focus=%v, want focusTerminal", m.focus)
+	}
+}
+
+func TestTabSkipsSecondPaneWhenUnsplit(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> editor
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> terminal directly, no second pane stop
+	m = updated.(Model)
+	if m.focus != focusTerminal {
+		t.Fatalf("got focus=%v, want focusTerminal", m.focus)
+	}
+}
+
+// End-to-end integration test covering the whole feature together: open
+// two files, split, edit both independently, resize, move a tab back,
+// close, quit-with-unsaved-changes still shows every dirty file across
+// both panes.
+func TestSplitViewEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 0) // pane0=[b], pane1=[a], activePane=1
+
+	// Edit pane1's active tab (a.go).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	m = updated.(Model)
+	if !m.panes[1].tabs[0].editor.HasUnsavedChanges() {
+		t.Fatal("expected editing pane1's tab to mark it dirty")
+	}
+
+	// Switch to pane0 and edit it too.
+	m.activePane = 0
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Y")})
+	m = updated.(Model)
+	if !m.panes[0].tabs[0].editor.HasUnsavedChanges() {
+		t.Fatal("expected editing pane0's tab to mark it dirty")
+	}
+
+	// Quitting should list both dirty files, from both panes.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	m = updated.(Model)
+	if m.activeDialog != dialogConfirmDiscard {
+		t.Fatal("expected the quit confirmation to open with two dirty tabs across two panes")
+	}
+
+	// Cancel the quit, move the tab back left, close it clean.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(1, 0) // a.go back to pane0
+	if len(m.panes) != 1 {
+		t.Fatalf("got %d panes, want 1 after moving pane1's only tab back", len(m.panes))
+	}
+	if len(m.panes[0].tabs) != 2 {
+		t.Fatalf("got %d tabs in the collapsed pane, want 2", len(m.panes[0].tabs))
+	}
+}
