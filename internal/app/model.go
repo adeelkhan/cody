@@ -205,10 +205,31 @@ func (m Model) tabBarH() int {
 // minimums, clampTreeWidth/clampTerminalHeight's degenerate handling (see
 // clampInt) can still leave this arithmetic negative, and a negative size
 // must never reach a pane's SetSize.
+// paneWidths returns each pane's on-screen width (border included):
+// unsplit, the one pane spans the full editor column; split, each spans
+// its own share either side of m.splitCol. Shared by View()'s rendering,
+// newTabEditorSize, and Update's WindowSizeMsg resize loop so they can't
+// drift out of sync with each other.
+func (m Model) paneWidths() []int {
+	widths := make([]int, len(m.panes))
+	if len(m.panes) == 1 {
+		widths[0] = m.width - m.treeWidth
+	} else {
+		widths[0] = m.splitCol - m.treeWidth
+		widths[1] = m.width - m.splitCol
+	}
+	return widths
+}
+
 func (m Model) newTabEditorSize() (width, height int) {
 	paneHeight := m.height - menuBarHeight - statusBarHeight
 	editorHeight := paneHeight - m.terminalHeight - tabBarHeight
-	return max(0, m.width-m.treeWidth-borderSize), max(0, editorHeight-borderSize)
+	widths := m.paneWidths()
+	w := m.width - m.treeWidth // fallback if activePane is somehow out of range
+	if m.activePane >= 0 && m.activePane < len(widths) {
+		w = widths[m.activePane]
+	}
+	return max(0, w-borderSize), max(0, editorHeight-borderSize)
 }
 
 // openOrSwitch opens path in a new tab, or switches to its existing tab if
@@ -315,6 +336,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// now overflow (or invert) the new one.
 		m.treeWidth = m.clampTreeWidth(m.treeWidth)
 		m.terminalHeight = m.clampTerminalHeight(m.terminalHeight)
+		if len(m.panes) == 2 {
+			m.splitCol = m.clampSplitCol(m.splitCol)
+		}
+		// A resize can also invalidate an open tab menu's anchor the same
+		// way narrowing a pane's tab bar via a drag can (see
+		// tabMenuStartCol's doc comment) — check and clear it here, the
+		// one place model state actually gets to change in response to a
+		// resize (View() cannot mutate m.tabMenu itself).
+		if m.tabMenu != nil {
+			if _, ok := m.tabMenuStartCol(); !ok {
+				m.tabMenu = nil
+			}
+		}
 		paneHeight := m.height - menuBarHeight - statusBarHeight
 		editorHeight := paneHeight - m.terminalHeight - m.tabBarH()
 		// clampTreeWidth/clampTerminalHeight's degenerate-window handling
@@ -323,20 +357,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// every value handed to a pane's SetSize at 0, since a negative
 		// size reaching the terminal's real vt.Emulator panics rather than
 		// degrading gracefully.
-		editorW := max(0, m.width-m.treeWidth-borderSize)
 		m.tree = m.tree.SetSize(max(0, m.treeWidth-borderSize), max(0, paneHeight-borderSize))
 		// Size every open tab's editor in every pane, not just the active
-		// one: a background tab left at its stale (or zero) size would
-		// treat itself as "unbounded" once switched to or clicked in,
-		// breaking its scroll-offset math (see openOrSwitch's doc
-		// comment). Task 3 makes editorW pane-specific; for now (single
-		// pane) every pane shares the same width.
+		// one, and each at its OWN pane's width (paneWidths already
+		// accounts for the split, if any) — a background tab left at its
+		// stale (or zero) size would treat itself as "unbounded" once
+		// switched to or clicked in, breaking its scroll-offset math (see
+		// openOrSwitch's doc comment).
+		widths := m.paneWidths()
 		for pi := range m.panes {
+			pw := max(0, widths[pi]-borderSize)
 			for i := range m.panes[pi].tabs {
-				m.panes[pi].tabs[i].editor = m.panes[pi].tabs[i].editor.SetSize(editorW, max(0, editorHeight-borderSize))
+				m.panes[pi].tabs[i].editor = m.panes[pi].tabs[i].editor.SetSize(pw, max(0, editorHeight-borderSize))
 			}
 		}
-		m.terminal = m.terminal.SetSize(editorW, max(0, m.terminalHeight-borderSize))
+		termW := max(0, m.width-m.treeWidth-borderSize)
+		m.terminal = m.terminal.SetSize(termW, max(0, m.terminalHeight-borderSize))
 		return m, nil
 	}
 	if _, ok := msg.(editor.RehighlightMsg); ok {
@@ -477,12 +513,16 @@ func (m Model) handleClick(x, y int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.tabMenu != nil {
-		_, panes, _ := m.paneLayout()
-		pl := panes[m.tabMenu.pane]
-		startCol := pl.tabBar.x0 + tabRegions(m.panes[m.tabMenu.pane].tabs, pl.tabBar.x1-pl.tabBar.x0)[m.tabMenu.index].startCol
-		width := lipgloss.Width(renderTabMenu(*m.tabMenu, 0))
-		menuY := pl.tabBar.y1 // dropdown opens directly below the tab bar
-		if x >= startCol && x < startCol+width && y == menuY {
+		startCol, ok := m.tabMenuStartCol()
+		if !ok {
+			m.tabMenu = nil
+			return m, nil
+		}
+		rendered := renderTabMenu(*m.tabMenu, startCol)
+		width := lipgloss.Width(rendered)
+		top := m.tabMenuTop()
+		height := lipgloss.Height(rendered)
+		if x >= startCol && x < startCol+width && y >= top && y < top+height {
 			m = m.selectTabMenuItem(tabMenuItems(*m.tabMenu)[0])
 			return m, nil
 		}
@@ -553,8 +593,16 @@ func (m Model) paneLayout() (tree rect, panes []editorPaneLayout, terminalR rect
 	if m.openMenu != "" {
 		dropdownHeight = lipgloss.Height(renderDropdown(m.openMenu, m.commands))
 	}
-	bodyTop := menuBarHeight + dropdownHeight
-	bodyHeight := paneHeight - dropdownHeight
+	tabMenuHeight := 0
+	if m.tabMenu != nil {
+		// The rendered height doesn't depend on the anchor column (only
+		// its horizontal position does), so a placeholder column is fine
+		// here — this call exists purely to measure height, never to
+		// compute where the menu actually renders.
+		tabMenuHeight = lipgloss.Height(renderTabMenu(*m.tabMenu, 0))
+	}
+	bodyTop := menuBarHeight + dropdownHeight + tabMenuHeight
+	bodyHeight := paneHeight - dropdownHeight - tabMenuHeight
 	tabBarH := m.tabBarH()
 	editorHeight := bodyHeight - m.terminalHeight - tabBarH
 
@@ -582,6 +630,39 @@ func (m Model) paneLayout() (tree rect, panes []editorPaneLayout, terminalR rect
 	return
 }
 
+// tabMenuTop returns the screen row m.tabMenu (if open) starts rendering
+// at: directly below the menu bar and any open File/Edit dropdown, above
+// the body — the same row the dropdown itself opens at.
+func (m Model) tabMenuTop() int {
+	dropdownHeight := 0
+	if m.openMenu != "" {
+		dropdownHeight = lipgloss.Height(renderDropdown(m.openMenu, m.commands))
+	}
+	return menuBarHeight + dropdownHeight
+}
+
+// tabMenuStartCol computes the screen column m.tabMenu should be anchored
+// at (matching the right-clicked tab's own column), or ok=false if the tab
+// it's anchored to no longer has a visible region in its pane's tab bar —
+// e.g. a resize or drag narrowed that bar since the menu opened. Callers
+// must treat ok=false as "this tabMenu is stale" and not index into
+// anything with m.tabMenu.index.
+func (m Model) tabMenuStartCol() (col int, ok bool) {
+	if m.tabMenu == nil {
+		return 0, false
+	}
+	_, panes, _ := m.paneLayout()
+	if m.tabMenu.pane < 0 || m.tabMenu.pane >= len(panes) {
+		return 0, false
+	}
+	pl := panes[m.tabMenu.pane]
+	regions := tabRegions(m.panes[m.tabMenu.pane].tabs, pl.tabBar.x1-pl.tabBar.x0)
+	if m.tabMenu.index < 0 || m.tabMenu.index >= len(regions) {
+		return 0, false
+	}
+	return pl.tabBar.x0 + regions[m.tabMenu.index].startCol, true
+}
+
 // handlePaneClick routes a click that landed outside the menu bar and any
 // open dropdown to whichever pane's rectangle contains it, switching focus
 // there and forwarding the click for pane-specific handling (tree row
@@ -603,10 +684,15 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, nil
 			}
-			m.activePane = pi
 			if relX >= region.closeStart && relX < region.closeEnd {
+				// Deliberately does NOT set m.activePane = pi first — a
+				// close action on a non-active pane's tab shouldn't
+				// redirect where the next keystroke goes, matching
+				// handleWheel's existing "only a deliberate select
+				// switches panes" precedent below.
 				return m.closeTab(pi, region.tabIndex)
 			}
+			m.activePane = pi
 			m.panes[pi].activeTab = region.tabIndex
 			m.focus = focusEditor
 			return m, nil
@@ -707,7 +793,7 @@ func (m Model) handleWheel(x, y, delta int) (tea.Model, tea.Cmd) {
 // while a dialog/dropdown is open — resizing then would move panes the
 // user can't see change.
 func (m Model) beginResizeDrag(x, y int) (Model, bool) {
-	if m.activeDialog != dialogNone || m.openMenu != "" {
+	if m.activeDialog != dialogNone || m.openMenu != "" || m.tabMenu != nil {
 		return m, false
 	}
 	treeRect, panes, terminalRect := m.paneLayout()
@@ -738,6 +824,13 @@ func (m Model) applyResizeDrag(x, y int) Model {
 	switch m.resizeDrag {
 	case resizeTree:
 		m.treeWidth = m.clampTreeWidth(x + 1)
+		// Dragging the tree border can push m.treeWidth past the split
+		// boundary the same way a window resize can (clampTreeWidth only
+		// knows about minEditorWidth, not m.splitCol) — re-clamp so the
+		// split can't invert.
+		if len(m.panes) == 2 {
+			m.splitCol = m.clampSplitCol(m.splitCol)
+		}
 	case resizeTerminal:
 		_, _, terminalRect := m.paneLayout()
 		m.terminalHeight = m.clampTerminalHeight(terminalRect.y1 - y)
@@ -883,7 +976,23 @@ func (m Model) View() string {
 		dropdownHeight = lipgloss.Height(dropdown)
 	}
 
-	bodyHeight := paneHeight - dropdownHeight
+	var tabMenuView string
+	tabMenuHeight := 0
+	if m.tabMenu != nil {
+		if startCol, ok := m.tabMenuStartCol(); ok {
+			tabMenuView = renderTabMenu(*m.tabMenu, startCol)
+			tabMenuHeight = lipgloss.Height(tabMenuView)
+		}
+		// ok == false means m.tabMenu is stale (see tabMenuStartCol's own
+		// doc comment) — View() has no way to clear the field itself (it
+		// takes a value receiver and only returns a string); Update's
+		// WindowSizeMsg branch is what actually clears it going forward
+		// (Fix 2 below). For this one frame, rendering nothing for it is
+		// enough to avoid the crash — tabMenuHeight stays 0, matching
+		// "nothing to reserve space for".
+	}
+
+	bodyHeight := paneHeight - dropdownHeight - tabMenuHeight
 	tabBarH := m.tabBarH()
 	editorHeight := bodyHeight - m.terminalHeight - tabBarH
 
@@ -916,13 +1025,7 @@ func (m Model) View() string {
 	// One width per pane: unsplit, a pane spans the full editor column
 	// (matching today's single editorStyle exactly); split, each spans
 	// its own share either side of m.splitCol.
-	paneWidth := make([]int, len(m.panes))
-	if len(m.panes) == 1 {
-		paneWidth[0] = m.width - m.treeWidth
-	} else {
-		paneWidth[0] = m.splitCol - m.treeWidth
-		paneWidth[1] = m.width - m.splitCol
-	}
+	paneWidth := m.paneWidths()
 	paneStyle := make([]lipgloss.Style, len(m.panes))
 	for i, w := range paneWidth {
 		paneStyle[i] = lipgloss.NewStyle().
@@ -983,23 +1086,14 @@ func (m Model) View() string {
 	)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(clampBlockWidth(tree.View(), m.treeWidth-borderSize)), right)
 
-	var tabMenuView string
-	if m.tabMenu != nil {
-		_, panes, _ := m.paneLayout()
-		pl := panes[m.tabMenu.pane]
-		startCol := pl.tabBar.x0 + tabRegions(m.panes[m.tabMenu.pane].tabs, pl.tabBar.x1-pl.tabBar.x0)[m.tabMenu.index].startCol
-		tabMenuView = renderTabMenu(*m.tabMenu, startCol)
-	}
-
 	sections := []string{menuBar}
 	if dropdown != "" {
 		sections = append(sections, dropdown)
 	}
-	sections = append(sections, body)
 	if tabMenuView != "" {
 		sections = append(sections, tabMenuView)
 	}
-	sections = append(sections, status)
+	sections = append(sections, body, status)
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 

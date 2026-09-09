@@ -1733,3 +1733,290 @@ func TestSplitViewEndToEnd(t *testing.T) {
 		t.Fatalf("got %d tabs in the collapsed pane, want 2", len(m.panes[0].tabs))
 	}
 }
+
+// --- Final-review regression tests ---
+//
+// The four tests below cover the three Critical and one Important findings
+// from the final whole-branch review (see
+// .superpowers/sdd/2026-09-09-split-view-editor/final-review-fixes.md).
+
+// TestRightClickedTabMenuClearsWhenWindowNarrowsPastItsAnchor covers
+// Critical 1: m.tabMenu.index could exceed tabRegions(...)'s returned
+// length after a resize narrowed the tab bar, and nothing bounds-checked
+// before indexing — a guaranteed panic in View()/handleClick(). Fix 1 added
+// tabMenuStartCol's ok-check; Fix 2 wired it into Update's WindowSizeMsg
+// branch so a stale tab menu is actually cleared, not just safely ignored.
+func TestRightClickedTabMenuClearsWhenWindowNarrowsPastItsAnchor(t *testing.T) {
+	dir := t.TempDir()
+	var paths []string
+	for _, name := range []string{"a.go", "b.go", "c.go", "d.go", "e.go", "f.go", "g.go", "h.go"} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("package p"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, p)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 30})
+	m = updated.(Model)
+	for _, p := range paths {
+		updated, _ = m.Update(filetree.FileOpenedMsg{Path: p})
+		m = updated.(Model)
+	}
+	if len(m.panes[0].tabs) != 8 {
+		t.Fatalf("got %d tabs open, want 8", len(m.panes[0].tabs))
+	}
+
+	// Right-click the last tab (h.go, index 7). At width 200 the (unsplit)
+	// tab bar is 170 cols wide (200 - defaultTreeWidth) — every 8-col tab
+	// (" x.go × ") is visible.
+	region := tabRegions(m.panes[0].tabs, 170)[7]
+	if region.tabIndex != 7 {
+		t.Fatalf("test setup: got region.tabIndex=%d, want 7 (h.go must be visible at full width)", region.tabIndex)
+	}
+	clickX := defaultTreeWidth + (region.startCol+region.endCol)/2
+	updated, _ = m.Update(tea.MouseMsg{X: clickX, Y: 1, Button: tea.MouseButtonRight, Action: tea.MouseActionPress})
+	m = updated.(Model)
+	if m.tabMenu == nil || m.tabMenu.index != 7 {
+		t.Fatalf("test setup: got tabMenu=%+v, want it open on index 7", m.tabMenu)
+	}
+
+	// Narrow the window enough that the (now 30-col) tab bar only fits 4
+	// tabs — h.go's region (index 7) no longer exists.
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	m = updated.(Model)
+
+	if m.tabMenu != nil {
+		t.Fatalf("got tabMenu=%+v after narrowing past its anchor, want nil (Fix 2 must clear a stale tab menu on resize)", m.tabMenu)
+	}
+
+	// Confirm the full path stays panic-free end-to-end (Fix 1's
+	// tabMenuStartCol ok-check is what actually prevents the crash if the
+	// menu were somehow still set here).
+	_ = m.View()
+}
+
+// TestRightClickedTabMenuInSplitViewFitsOnScreenAndItsClickTargetMatchesWhereItRenders
+// covers Critical 2: the tab menu was appended as a trailing section after
+// body without reducing bodyHeight (so the whole frame could exceed the
+// terminal's height), and handleClick's hit-test row didn't match where the
+// menu actually rendered (its only mouse trigger was effectively
+// unusable).
+func TestRightClickedTabMenuInSplitViewFitsOnScreenAndItsClickTargetMatchesWhereItRenders(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 0) // pane0=[b.go], pane1=[a.go]
+
+	_, panes, _ := m.paneLayout()
+	pl := panes[0]
+	updated, _ = m.Update(tea.MouseMsg{X: pl.tabBar.x0 + 2, Y: pl.tabBar.y0, Button: tea.MouseButtonRight, Action: tea.MouseActionPress})
+	m = updated.(Model)
+	if m.tabMenu == nil || m.tabMenu.pane != 0 || m.tabMenu.index != 0 {
+		t.Fatalf("test setup: got tabMenu=%+v, want it open on pane0/tab0", m.tabMenu)
+	}
+
+	// (a) The tab menu's own height must be reserved out of the body, so
+	// the whole frame never exceeds the terminal's actual height.
+	if h := lipgloss.Height(m.View()); h > 30 {
+		t.Fatalf("got View() height=%d, want <= 30 (terminal height) — the tab menu must not be appended on top of an already-full-height body", h)
+	}
+
+	// (b) A click at exactly the (x, y) the menu itself computes as its
+	// anchor/top must select its item — proves handleClick's hit-test
+	// agrees with where the menu actually renders.
+	startCol, ok := m.tabMenuStartCol()
+	if !ok {
+		t.Fatal("test setup: tabMenuStartCol() reported not ok")
+	}
+	top := m.tabMenuTop()
+	beforePanes := len(m.panes)
+	updated, _ = m.Update(tea.MouseMsg{X: startCol, Y: top, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if m.tabMenu != nil {
+		t.Fatal("expected the click at the menu's own computed anchor to select its item and close the menu")
+	}
+	// selectTabMenuItem("Split + Move Right") on pane0's only tab moves it
+	// into pane1 (which already has a.go), emptying pane0 — removeTab's
+	// collapse rule then merges back down to a single pane.
+	if len(m.panes) != beforePanes-1 {
+		t.Fatalf("got %d panes after selecting the tab menu item, want %d (collapsed back to one pane)", len(m.panes), beforePanes-1)
+	}
+	if len(m.panes[0].tabs) != 2 {
+		t.Fatalf("got %d tabs in the collapsed pane, want 2 (a.go and b.go)", len(m.panes[0].tabs))
+	}
+}
+
+// TestSplitColumnReClampsWhenWindowShrinksBelowItsOldPosition and
+// TestSplitColumnReClampsWhenTreeBorderIsDraggedTowardIt cover Critical 3:
+// m.splitCol was never re-clamped after a window resize or a tree-width
+// drag, so either could push it past the new bounds and invert a pane's
+// rect.
+
+func TestSplitColumnReClampsWhenWindowShrinksBelowItsOldPosition(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 0) // split; splitCol defaults to the midpoint, 115
+	if m.splitCol != 115 {
+		t.Fatalf("test setup: got splitCol=%d, want 115 (midpoint at width 200)", m.splitCol)
+	}
+
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 90, Height: 30})
+	m = updated.(Model)
+
+	lo := m.treeWidth + minEditorWidth
+	hi := m.width - minEditorWidth
+	if m.splitCol < lo || m.splitCol > hi {
+		t.Fatalf("got splitCol=%d after shrinking the window, want it re-clamped to [%d, %d]", m.splitCol, lo, hi)
+	}
+	_, panes, _ := m.paneLayout()
+	if panes[1].editor.x1 <= panes[1].editor.x0 {
+		t.Fatalf("got panes[1] editor rect x0=%d x1=%d, want x1 > x0 (the right pane must not invert)", panes[1].editor.x0, panes[1].editor.x1)
+	}
+}
+
+func TestSplitColumnReClampsWhenTreeBorderIsDraggedTowardIt(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 0) // split; splitCol defaults to 115
+	if m.splitCol != 115 {
+		t.Fatalf("test setup: got splitCol=%d, want 115", m.splitCol)
+	}
+
+	// Drag the tree border out to x=150 — well past the split boundary at
+	// 115.
+	updated, _ = m.Update(press(defaultTreeWidth-1, 5))
+	m = updated.(Model)
+	if m.resizeDrag != resizeTree {
+		t.Fatalf("test setup: got resizeDrag=%v, want resizeTree", m.resizeDrag)
+	}
+	updated, _ = m.Update(drag(150, 5))
+	m = updated.(Model)
+
+	lo := m.treeWidth + minEditorWidth
+	hi := m.width - minEditorWidth
+	if m.splitCol < lo || m.splitCol > hi {
+		t.Fatalf("got splitCol=%d after dragging the tree border past it, want it re-clamped to [%d, %d]", m.splitCol, lo, hi)
+	}
+	_, panes, _ := m.paneLayout()
+	if panes[0].editor.x1 <= panes[0].editor.x0 {
+		t.Fatalf("got panes[0] editor rect x0=%d x1=%d, want x1 > x0 (the left pane must not invert)", panes[0].editor.x0, panes[0].editor.x1)
+	}
+	if panes[1].editor.x1 <= panes[1].editor.x0 {
+		t.Fatalf("got panes[1] editor rect x0=%d x1=%d, want x1 > x0 (the right pane must not invert)", panes[1].editor.x0, panes[1].editor.x1)
+	}
+}
+
+// TestNewTabInNarrowerSplitPaneIsSizedToThatPanesOwnWidth covers the
+// Important finding: newTabEditorSize (and the WindowSizeMsg per-tab resize
+// loop) sized every tab's editor to the full editor column instead of its
+// own pane's on-screen share, per spec §3.4.
+func TestNewTabInNarrowerSplitPaneIsSizedToThatPanesOwnWidth(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	fileC := filepath.Join(dir, "c.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileC, []byte("package c"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 0) // pane0=[b.go], pane1=[a.go]; activePane=1
+
+	// Push the split boundary far right so the two panes have visibly
+	// different widths: pane0 = 140 cols, pane1 = 30 cols.
+	m.splitCol = 170
+
+	widths := m.paneWidths()
+	if widths[0] == widths[1] {
+		t.Fatalf("test setup: got equal pane widths %v, want them to differ", widths)
+	}
+	if m.activePane != 1 {
+		t.Fatalf("test setup: got activePane=%d, want 1 (the narrower pane, from the move above)", m.activePane)
+	}
+
+	wantW := widths[1] - borderSize
+	gotW, _ := m.newTabEditorSize()
+	if gotW != wantW {
+		t.Fatalf("got newTabEditorSize width=%d, want %d (pane1's own on-screen width, not the full editor column)", gotW, wantW)
+	}
+	if fullColumnW := m.width - m.treeWidth - borderSize; gotW == fullColumnW {
+		t.Fatalf("got newTabEditorSize width=%d, same as the old full-editor-column formula (%d) — it must use the active pane's actual on-screen width instead", gotW, fullColumnW)
+	}
+
+	// Exercise it end-to-end too: opening a new tab must not panic and
+	// must land in the active (narrower) pane.
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileC})
+	m = updated.(Model)
+	if len(m.panes[1].tabs) != 2 {
+		t.Fatalf("got %d tabs in pane1, want 2 (a.go, c.go)", len(m.panes[1].tabs))
+	}
+}
