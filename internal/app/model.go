@@ -179,10 +179,15 @@ func (m Model) tabBarH() int {
 // tab" editor-height formula (i.e. reserves tabBarHeight), even if m.tabs
 // is currently empty: the tab being opened is about to make m.tabs
 // non-empty, so the tab bar is about to appear.
+//
+// The result is floored at 0: on a window smaller than the panes' combined
+// minimums, clampTreeWidth/clampTerminalHeight's degenerate handling (see
+// clampInt) can still leave this arithmetic negative, and a negative size
+// must never reach a pane's SetSize.
 func (m Model) newTabEditorSize() (width, height int) {
 	paneHeight := m.height - menuBarHeight - statusBarHeight
 	editorHeight := paneHeight - m.terminalHeight - tabBarHeight
-	return m.width - m.treeWidth - borderSize, editorHeight - borderSize
+	return max(0, m.width-m.treeWidth-borderSize), max(0, editorHeight-borderSize)
 }
 
 // openOrSwitch opens path in a new tab, or switches to its existing tab if
@@ -226,16 +231,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.terminalHeight = m.clampTerminalHeight(m.terminalHeight)
 		paneHeight := m.height - menuBarHeight - statusBarHeight
 		editorHeight := paneHeight - m.terminalHeight - m.tabBarH()
-		editorW := m.width - m.treeWidth - borderSize
-		m.tree = m.tree.SetSize(m.treeWidth-borderSize, paneHeight-borderSize)
+		// clampTreeWidth/clampTerminalHeight's degenerate-window handling
+		// (see clampInt) can still leave these negative on a window smaller
+		// than the panes' combined minimums (aggressive resizing) — floor
+		// every value handed to a pane's SetSize at 0, since a negative
+		// size reaching the terminal's real vt.Emulator panics rather than
+		// degrading gracefully.
+		editorW := max(0, m.width-m.treeWidth-borderSize)
+		m.tree = m.tree.SetSize(max(0, m.treeWidth-borderSize), max(0, paneHeight-borderSize))
 		// Size every open tab's editor, not just the active one: a
 		// background tab left at its stale (or zero) size would treat
 		// itself as "unbounded" once switched to or clicked in, breaking
 		// its scroll-offset math (see openOrSwitch's doc comment).
 		for i := range m.tabs {
-			m.tabs[i].editor = m.tabs[i].editor.SetSize(editorW, editorHeight-borderSize)
+			m.tabs[i].editor = m.tabs[i].editor.SetSize(editorW, max(0, editorHeight-borderSize))
 		}
-		m.terminal = m.terminal.SetSize(editorW, m.terminalHeight-borderSize)
+		m.terminal = m.terminal.SetSize(editorW, max(0, m.terminalHeight-borderSize))
 		return m, nil
 	}
 	if _, ok := msg.(editor.RehighlightMsg); ok {
@@ -712,11 +723,19 @@ func (m Model) View() string {
 			dirty[t.path] = true
 		}
 	}
-	tree := m.tree.SetSize(m.treeWidth-borderSize, bodyHeight-borderSize).SetDirty(dirty)
-	editor := m.activeEditor().SetSize(m.width-m.treeWidth-borderSize, editorHeight-borderSize)
+	// Floored at 0 before reaching any pane's SetSize: a window smaller
+	// than the panes' combined minimums (aggressive resizing) can leave
+	// this arithmetic negative even after clampTreeWidth/
+	// clampTerminalHeight (see clampInt's degenerate-window handling), and
+	// a negative size reaching the terminal's real vt.Emulator panics
+	// rather than degrading gracefully. termWidth/termHeight stay
+	// unclamped below for clampBlockWidth, which already treats <= 0 as
+	// "don't touch it".
+	tree := m.tree.SetSize(max(0, m.treeWidth-borderSize), max(0, bodyHeight-borderSize)).SetDirty(dirty)
+	editor := m.activeEditor().SetSize(max(0, m.width-m.treeWidth-borderSize), max(0, editorHeight-borderSize))
 	termWidth := m.width - m.treeWidth - borderSize
 	termHeight := m.terminalHeight - borderSize
-	term := m.terminal.SetSize(termWidth, termHeight)
+	term := m.terminal.SetSize(max(0, termWidth), max(0, termHeight))
 
 	var rightSections []string
 	if len(m.tabs) > 0 {
