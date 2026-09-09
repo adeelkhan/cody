@@ -32,7 +32,8 @@ A terminal-based code editor written in Go.
 Requires a C compiler (CGO) for tree-sitter grammar bindings.
 
 ```bash
-go build -o cody ./cmd/cody
+make build                        # builds the cody binary (go build -o cody ./cmd/cody)
+make test                         # runs the test suite (go test ./...)
 ./cody <path-to-project>          # opens the project tree at the given path
 ./cody                            # defaults to the current directory
 ./cody --no-nerd-font <path>      # plain Unicode icons (for terminals without Nerd Fonts)
