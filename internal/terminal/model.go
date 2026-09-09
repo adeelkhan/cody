@@ -42,7 +42,21 @@ func New() Model {
 // — this makes it safe to call every render frame (matching the pattern
 // already used for the editor/tree panes) without spamming the child
 // process with spurious resize notifications on every keystroke.
+//
+// width/height are clamped to >= 0 here rather than trusted from the
+// caller: an aggressive window resize can drive the app's computed pane
+// width negative (see app.Model's WindowSizeMsg handling), and the real
+// vt.Emulator's Resize panics on a negative slice bound instead of
+// degrading gracefully — this package can't rely on every caller getting
+// the arithmetic right upstream, the same way editor/filetree already
+// floor their own content width before using it.
 func (m Model) SetSize(width, height int) Model {
+	if width < 0 {
+		width = 0
+	}
+	if height < 0 {
+		height = 0
+	}
 	changed := width != m.width || height != m.height
 	m.width, m.height = width, height
 	if changed {

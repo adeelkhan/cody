@@ -259,3 +259,28 @@ func TestViewShowsTerminalNotStartedBeforeFirstFocus(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// Regression test: an aggressive window resize can shrink the app's
+// computed pane width below zero before it reaches SetSize (see
+// app.Model's WindowSizeMsg handling) — a negative width/height reaching
+// the real vt.Emulator's Resize panics with "slice bounds out of range"
+// deep inside its buffer resize (not something this package can catch
+// after the fact). SetSize must clamp to zero itself rather than trust
+// the caller, since a third-party library's Resize has no obligation to
+// handle negative input gracefully.
+func TestSetSizeClampsNegativeDimensionsToZero(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New()
+	m, _ = m.Start()
+	m = m.SetSize(-5, 23)
+
+	if e.w < 0 || e.h < 0 {
+		t.Fatalf("got emulator resize (%d, %d), want both clamped to >= 0", e.w, e.h)
+	}
+	if p.resizeW < 0 || p.resizeH < 0 {
+		t.Fatalf("got pty resize (%d, %d), want both clamped to >= 0", p.resizeW, p.resizeH)
+	}
+}

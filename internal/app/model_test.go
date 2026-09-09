@@ -1272,3 +1272,52 @@ func TestResizeDragDoesNotStartWhileADialogIsOpen(t *testing.T) {
 		t.Fatal("expected a border press to not start a resize while a dialog is open")
 	}
 }
+
+// Regression test: clampTreeWidth's degenerate branch (see clampInt) pins
+// treeWidth to minTreeWidth whenever the window is too small to honor both
+// minTreeWidth and minEditorWidth at once — but it does so unconditionally,
+// without regard to how small the window actually is. A window shrunk far
+// enough (aggressive resizing) can still leave m.width - m.treeWidth -
+// borderSize negative even after that clamp. That negative value used to
+// flow straight into m.terminal.SetSize -> the real vt.Emulator's Resize,
+// which panics on a negative slice bound rather than degrading gracefully.
+// The started terminal (a real pty/shell, matching how this bug only
+// reproduced once the terminal pane had actually been used) is required to
+// reach that exact panic path — a never-started terminal's SetSize is a
+// no-op past storing width/height.
+func TestAggressiveResizeToTinyWidthDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> editor
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab}) // -> terminal, starts it
+	m = updated.(Model)
+	if cmd != nil {
+		cmd() // run the pty-start command so m.terminal is actually started
+	}
+	if !m.terminal.Started() {
+		t.Fatal("setup failed: expected the terminal to be started")
+	}
+	t.Cleanup(func() { m.terminal.Close() })
+
+	// width=12 reproduces the reported crash exactly: with the default
+	// treeWidth=30 pinned to minTreeWidth=15 by clampTreeWidth's degenerate
+	// branch (clampInt), m.width-m.treeWidth-borderSize(2) = 12-15-2 = -5,
+	// the exact panic value observed. treeWidth itself staying pinned at
+	// 15 here is expected — the fix floors the *derived* size handed to
+	// each pane's SetSize, not treeWidth's own clamped value, so this test
+	// only asserts what the fix actually guarantees: reaching this line at
+	// all, without the real vt.Emulator panicking on a negative resize.
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 12, Height: 24})
+	m = updated.(Model) // must not panic
+
+	if m.width != 12 {
+		t.Fatalf("got m.width=%d, want 12 (the resize itself should still apply)", m.width)
+	}
+}
