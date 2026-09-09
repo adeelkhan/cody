@@ -750,6 +750,11 @@ func isWordRune(r rune) bool {
 // that. Stops at column 0; like moveLeft, never wraps to the previous
 // line.
 func (m *Model) moveWordLeft() {
+	// A caller may have moved to this line without clamping cursorCol
+	// against its length first (e.g. HandleClick's fold-toggle branch only
+	// sets cursorLine) — indexing runes[i-1] below with a stale, too-large
+	// column would panic rather than just producing a wrong position.
+	m.clampCol()
 	runes := []rune(m.buf.Lines[m.cursorLine])
 	i := m.cursorCol
 	for i > 0 && !isWordRune(runes[i-1]) {
@@ -766,6 +771,9 @@ func (m *Model) moveWordLeft() {
 // cursor, then over the following word characters. Stops at end of line;
 // like moveRight, never wraps to the next line.
 func (m *Model) moveWordRight() {
+	// See moveWordLeft's comment: cursorCol may be stale relative to this
+	// line if the caller changed cursorLine without clamping it.
+	m.clampCol()
 	runes := []rune(m.buf.Lines[m.cursorLine])
 	i := m.cursorCol
 	n := len(runes)
