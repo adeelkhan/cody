@@ -62,6 +62,7 @@ const (
 	resizeNone resizeKind = iota
 	resizeTree
 	resizeTerminal
+	resizeEditorSplit
 )
 
 // tab is one open file: its absolute path (the key used to detect an
@@ -476,10 +477,12 @@ func (m Model) handleClick(x, y int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.tabMenu != nil {
+		_, panes, _ := m.paneLayout()
+		pl := panes[m.tabMenu.pane]
+		startCol := pl.tabBar.x0 + tabRegions(m.panes[m.tabMenu.pane].tabs, pl.tabBar.x1-pl.tabBar.x0)[m.tabMenu.index].startCol
 		width := lipgloss.Width(renderTabMenu(*m.tabMenu, 0))
-		_, tabBarRect, _, _ := m.paneLayout()
-		startCol := tabBarRect.x0 // matches renderTabMenu's own anchor, see Task 3 for the exact anchor column
-		if x >= startCol && x < startCol+width && y == tabBarRect.y1 {
+		menuY := pl.tabBar.y1 // dropdown opens directly below the tab bar
+		if x >= startCol && x < startCol+width && y == menuY {
 			m = m.selectTabMenuItem(tabMenuItems(*m.tabMenu)[0])
 			return m, nil
 		}
@@ -532,12 +535,19 @@ func (r rect) contains(x, y int) bool {
 	return x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1
 }
 
+// editorPaneLayout is one editor pane's two rectangles: its tab bar and
+// its editor box, stacked vertically at the same x-span.
+type editorPaneLayout struct {
+	tabBar, editor rect
+}
+
 // paneLayout computes the on-screen rectangles (border included) of the
-// tree, editor, and terminal panes for the model's current size and menu
-// state. It mirrors the geometry View() renders so a mouse event's (x, y)
-// can be routed to whichever pane's box contains it — it must be kept in
-// sync with View() if that layout ever changes.
-func (m Model) paneLayout() (tree, tabBar, editorR, terminalR rect) {
+// tree, every editor pane, and the terminal for the model's current size
+// and menu state. It mirrors the geometry View() renders so a mouse
+// event's (x, y) can be routed to whichever box contains it — it must be
+// kept in sync with View() if that layout ever changes. panes has one
+// entry per m.panes, in the same order (panes[0] on the left).
+func (m Model) paneLayout() (tree rect, panes []editorPaneLayout, terminalR rect) {
 	paneHeight := m.height - menuBarHeight - statusBarHeight
 	dropdownHeight := 0
 	if m.openMenu != "" {
@@ -549,8 +559,25 @@ func (m Model) paneLayout() (tree, tabBar, editorR, terminalR rect) {
 	editorHeight := bodyHeight - m.terminalHeight - tabBarH
 
 	tree = rect{0, bodyTop, m.treeWidth, bodyTop + bodyHeight}
-	tabBar = rect{m.treeWidth, bodyTop, m.width, bodyTop + tabBarH}
-	editorR = rect{m.treeWidth, bodyTop + tabBarH, m.width, bodyTop + tabBarH + editorHeight}
+
+	if len(m.panes) == 1 {
+		panes = []editorPaneLayout{{
+			tabBar: rect{m.treeWidth, bodyTop, m.width, bodyTop + tabBarH},
+			editor: rect{m.treeWidth, bodyTop + tabBarH, m.width, bodyTop + tabBarH + editorHeight},
+		}}
+	} else {
+		panes = []editorPaneLayout{
+			{
+				tabBar: rect{m.treeWidth, bodyTop, m.splitCol, bodyTop + tabBarH},
+				editor: rect{m.treeWidth, bodyTop + tabBarH, m.splitCol, bodyTop + tabBarH + editorHeight},
+			},
+			{
+				tabBar: rect{m.splitCol, bodyTop, m.width, bodyTop + tabBarH},
+				editor: rect{m.splitCol, bodyTop + tabBarH, m.width, bodyTop + tabBarH + editorHeight},
+			},
+		}
+	}
+
 	terminalR = rect{m.treeWidth, bodyTop + tabBarH + editorHeight, m.width, bodyTop + bodyHeight}
 	return
 }
@@ -561,34 +588,40 @@ func (m Model) paneLayout() (tree, tabBar, editorR, terminalR rect) {
 // selection, editor cursor placement). A click inside no pane (e.g. on a
 // border, or before the first WindowSizeMsg) is a no-op.
 func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
-	treeRect, tabBarRect, editorRect, terminalRect := m.paneLayout()
-	switch {
-	case treeRect.contains(x, y):
+	treeRect, panes, terminalRect := m.paneLayout()
+	if treeRect.contains(x, y) {
 		m.focus = focusTree
 		relY := y - treeRect.y0 - 1 // -1 excludes the top border
 		var cmd tea.Cmd
 		m.tree, cmd = m.tree.HandleClick(relY)
 		return m, cmd
-	case tabBarRect.contains(x, y):
-		relX := x - tabBarRect.x0
-		region, ok := tabAt(relX, m.panes[0].tabs, tabBarRect.x1-tabBarRect.x0)
-		if !ok {
+	}
+	for pi, pl := range panes {
+		if pl.tabBar.contains(x, y) {
+			relX := x - pl.tabBar.x0
+			region, ok := tabAt(relX, m.panes[pi].tabs, pl.tabBar.x1-pl.tabBar.x0)
+			if !ok {
+				return m, nil
+			}
+			m.activePane = pi
+			if relX >= region.closeStart && relX < region.closeEnd {
+				return m.closeTab(pi, region.tabIndex)
+			}
+			m.panes[pi].activeTab = region.tabIndex
+			m.focus = focusEditor
 			return m, nil
 		}
-		if relX >= region.closeStart && relX < region.closeEnd {
-			return m.closeTab(0, region.tabIndex)
+		if pl.editor.contains(x, y) {
+			m.activePane = pi
+			m.focus = focusEditor
+			relX := x - pl.editor.x0 - 1
+			relY := y - pl.editor.y0 - 1
+			e, cmd := m.activeEditor().HandleClick(relX, relY)
+			m = m.setActiveEditor(e)
+			return m, cmd
 		}
-		m.panes[0].activeTab = region.tabIndex
-		m.focus = focusEditor
-		return m, nil
-	case editorRect.contains(x, y):
-		m.focus = focusEditor
-		relX := x - editorRect.x0 - 1
-		relY := y - editorRect.y0 - 1
-		e, cmd := m.activeEditor().HandleClick(relX, relY)
-		m = m.setActiveEditor(e)
-		return m, cmd
-	case terminalRect.contains(x, y):
+	}
+	if terminalRect.contains(x, y) {
 		m.focus = focusTerminal
 		return m.maybeStartTerminal()
 	}
@@ -596,28 +629,29 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 }
 
 // handleRightClick opens the tree's context menu when the click landed in
-// the tree pane, or the tab context menu when it landed on one of pane 0's
-// tabs (Task 3 generalizes this to every pane's tab bar; pane 1 doesn't
-// render yet); a no-op everywhere else, or while a dialog/dropdown is open.
+// the tree pane, or the tab context menu when it landed on any pane's tab
+// bar; a no-op everywhere else, or while a dialog/dropdown is open.
 func (m Model) handleRightClick(x, y int) (tea.Model, tea.Cmd) {
 	if m.activeDialog != dialogNone || m.openMenu != "" {
 		return m, nil
 	}
-	treeRect, tabBarRect, _, _ := m.paneLayout()
+	treeRect, panes, _ := m.paneLayout()
 	if treeRect.contains(x, y) {
 		m.focus = focusTree
 		relY := y - treeRect.y0 - 1
 		m.tree = m.tree.HandleRightClick(relY)
 		return m, nil
 	}
-	if tabBarRect.contains(x, y) {
-		relX := x - tabBarRect.x0
-		region, ok := tabAt(relX, m.panes[0].tabs, tabBarRect.x1-tabBarRect.x0)
-		if !ok {
+	for pi, pl := range panes {
+		if pl.tabBar.contains(x, y) {
+			relX := x - pl.tabBar.x0
+			region, ok := tabAt(relX, m.panes[pi].tabs, pl.tabBar.x1-pl.tabBar.x0)
+			if !ok {
+				return m, nil
+			}
+			m.tabMenu = &tabContextMenu{pane: pi, index: region.tabIndex}
 			return m, nil
 		}
-		m.tabMenu = &tabContextMenu{pane: 0, index: region.tabIndex}
-		return m, nil
 	}
 	return m, nil
 }
@@ -631,12 +665,35 @@ func (m Model) handleWheel(x, y, delta int) (tea.Model, tea.Cmd) {
 	if m.activeDialog != dialogNone || m.openMenu != "" {
 		return m, nil
 	}
-	treeRect, _, editorRect, _ := m.paneLayout()
-	switch {
-	case treeRect.contains(x, y):
+	treeRect, panes, _ := m.paneLayout()
+	if treeRect.contains(x, y) {
 		m.tree = m.tree.Scroll(delta)
-	case editorRect.contains(x, y):
-		m = m.setActiveEditor(m.activeEditor().ScrollLines(delta))
+		return m, nil
+	}
+	for pi, pl := range panes {
+		if pl.editor.contains(x, y) {
+			if pi == m.activePane {
+				m = m.setActiveEditor(m.activeEditor().ScrollLines(delta))
+				return m, nil
+			}
+			// Not the active pane: activeEditor()/setActiveEditor() are
+			// keyed to m.activePane, so scroll the other pane's tab
+			// directly instead — deliberately not switching activePane
+			// here, matching this function's existing contract ("the pane
+			// under the pointer, not necessarily the focused one").
+			// Bounds-checked defensively: every pane in m.panes is
+			// guaranteed non-empty whenever a split exists (removeTab's
+			// collapse rule, Task 1), so activeTab should never be -1
+			// here in practice — but a wheel event landing on a
+			// currently-invalid pane index must degrade to a no-op, not
+			// panic, regardless of what future changes might do to that
+			// invariant.
+			pn := &m.panes[pi]
+			if pn.activeTab >= 0 && pn.activeTab < len(pn.tabs) {
+				pn.tabs[pn.activeTab].editor = pn.tabs[pn.activeTab].editor.ScrollLines(delta)
+			}
+			return m, nil
+		}
 	}
 	return m, nil
 }
@@ -653,13 +710,21 @@ func (m Model) beginResizeDrag(x, y int) (Model, bool) {
 	if m.activeDialog != dialogNone || m.openMenu != "" {
 		return m, false
 	}
-	treeRect, _, editorRect, terminalRect := m.paneLayout()
+	treeRect, panes, terminalRect := m.paneLayout()
 	if x == treeRect.x1-1 && y >= treeRect.y0 && y < treeRect.y1 {
 		m.resizeDrag = resizeTree
 		return m, true
 	}
+	if len(panes) == 2 {
+		boundary := panes[0].editor.x1 // == panes[1].editor.x0 == m.splitCol
+		if x == boundary && y >= panes[0].editor.y0 && y < panes[0].editor.y1 {
+			m.resizeDrag = resizeEditorSplit
+			return m, true
+		}
+	}
+	editorRect := panes[0].editor
 	onHorizontalBoundary := y == editorRect.y1-1 || y == terminalRect.y0
-	if onHorizontalBoundary && x >= editorRect.x0 && x < editorRect.x1 {
+	if onHorizontalBoundary && x >= treeRect.x1 && x < m.width {
 		m.resizeDrag = resizeTerminal
 		return m, true
 	}
@@ -674,8 +739,10 @@ func (m Model) applyResizeDrag(x, y int) Model {
 	case resizeTree:
 		m.treeWidth = m.clampTreeWidth(x + 1)
 	case resizeTerminal:
-		_, _, _, terminalRect := m.paneLayout()
+		_, _, terminalRect := m.paneLayout()
 		m.terminalHeight = m.clampTerminalHeight(terminalRect.y1 - y)
+	case resizeEditorSplit:
+		m.splitCol = m.clampSplitCol(x)
 	}
 	return m
 }
@@ -809,13 +876,16 @@ func (m Model) View() string {
 	editorHeight := bodyHeight - m.terminalHeight - tabBarH
 
 	treeBorderColor := unfocusedBorderColor
-	editorBorderColor := unfocusedBorderColor
 	terminalBorderColor := unfocusedBorderColor
+	paneBorderColor := make([]lipgloss.Color, len(m.panes))
+	for i := range paneBorderColor {
+		paneBorderColor[i] = unfocusedBorderColor
+	}
 	switch m.focus {
 	case focusTree:
 		treeBorderColor = focusedBorderColor
 	case focusEditor:
-		editorBorderColor = focusedBorderColor
+		paneBorderColor[m.activePane] = focusedBorderColor
 	case focusTerminal:
 		terminalBorderColor = focusedBorderColor
 	}
@@ -825,16 +895,30 @@ func (m Model) View() string {
 		BorderForeground(treeBorderColor).
 		Width(m.treeWidth - borderSize).
 		Height(bodyHeight - borderSize)
-	editorStyle := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(editorBorderColor).
-		Width(m.width - m.treeWidth - borderSize).
-		Height(editorHeight - borderSize)
 	terminalStyle := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(terminalBorderColor).
 		Width(m.width - m.treeWidth - borderSize).
 		Height(m.terminalHeight - borderSize)
+
+	// One width per pane: unsplit, a pane spans the full editor column
+	// (matching today's single editorStyle exactly); split, each spans
+	// its own share either side of m.splitCol.
+	paneWidth := make([]int, len(m.panes))
+	if len(m.panes) == 1 {
+		paneWidth[0] = m.width - m.treeWidth
+	} else {
+		paneWidth[0] = m.splitCol - m.treeWidth
+		paneWidth[1] = m.width - m.splitCol
+	}
+	paneStyle := make([]lipgloss.Style, len(m.panes))
+	for i, w := range paneWidth {
+		paneStyle[i] = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(paneBorderColor[i]).
+			Width(w - borderSize).
+			Height(editorHeight - borderSize)
+	}
 
 	// Re-derive each pane's exact interior height right before rendering
 	// (on this value-receiver copy of m, so nothing here mutates the real
@@ -853,40 +937,57 @@ func (m Model) View() string {
 	// Floored at 0 before reaching any pane's SetSize: a window smaller
 	// than the panes' combined minimums (aggressive resizing) can leave
 	// this arithmetic negative even after clampTreeWidth/
-	// clampTerminalHeight (see clampInt's degenerate-window handling), and
-	// a negative size reaching the terminal's real vt.Emulator panics
-	// rather than degrading gracefully. termWidth/termHeight stay
-	// unclamped below for clampBlockWidth, which already treats <= 0 as
-	// "don't touch it".
+	// clampTerminalHeight/clampSplitCol (see clampInt's degenerate-window
+	// handling), and a negative size reaching the terminal's real
+	// vt.Emulator panics rather than degrading gracefully. termWidth/
+	// termHeight stay unclamped below for clampBlockWidth, which already
+	// treats <= 0 as "don't touch it".
 	tree := m.tree.SetSize(max(0, m.treeWidth-borderSize), max(0, bodyHeight-borderSize)).SetDirty(dirty)
-	editor := m.activeEditor().SetSize(max(0, m.width-m.treeWidth-borderSize), max(0, editorHeight-borderSize))
 	termWidth := m.width - m.treeWidth - borderSize
 	termHeight := m.terminalHeight - borderSize
 	term := m.terminal.SetSize(max(0, termWidth), max(0, termHeight))
 
-	var rightSections []string
-	if len(m.panes[0].tabs) > 0 {
-		// The tab bar has no border of its own, so it must be rendered at
-		// the same on-screen width as tabBarRect (paneLayout): m.width -
-		// m.treeWidth. editorStyle's content Width(m.width-m.treeWidth-
-		// borderSize) looks narrower only because its border adds
-		// borderSize back on screen — the tab bar has no border to add,
-		// so it must use the full span directly instead of subtracting
-		// borderSize again.
-		rightSections = append(rightSections, renderTabBar(m.width-m.treeWidth, m.panes[0].tabs, m.panes[0].activeTab))
+	var paneColumns []string
+	for i, p := range m.panes {
+		activeEditor := editor.Model{}
+		if p.activeTab >= 0 && p.activeTab < len(p.tabs) {
+			activeEditor = p.tabs[p.activeTab].editor.SetSize(max(0, paneWidth[i]-borderSize), max(0, editorHeight-borderSize))
+		}
+		var col []string
+		if len(p.tabs) > 0 {
+			// No border of its own, so it renders at this pane's full
+			// on-screen width — see the pre-split comment this replaced
+			// for why that's paneWidth[i], not paneWidth[i]-borderSize.
+			col = append(col, renderTabBar(paneWidth[i], p.tabs, p.activeTab))
+		}
+		col = append(col, paneStyle[i].Render(clampBlockWidth(activeEditor.View(), paneWidth[i]-borderSize)))
+		paneColumns = append(paneColumns, lipgloss.JoinVertical(lipgloss.Left, col...))
 	}
-	rightSections = append(rightSections,
-		editorStyle.Render(clampBlockWidth(editor.View(), m.width-m.treeWidth-borderSize)),
+	editorsRow := lipgloss.JoinHorizontal(lipgloss.Top, paneColumns...)
+
+	right := lipgloss.JoinVertical(lipgloss.Left,
+		editorsRow,
 		terminalStyle.Render(clampBlockWidth(term.View(), termWidth)),
 	)
-	right := lipgloss.JoinVertical(lipgloss.Left, rightSections...)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(clampBlockWidth(tree.View(), m.treeWidth-borderSize)), right)
+
+	var tabMenuView string
+	if m.tabMenu != nil {
+		_, panes, _ := m.paneLayout()
+		pl := panes[m.tabMenu.pane]
+		startCol := pl.tabBar.x0 + tabRegions(m.panes[m.tabMenu.pane].tabs, pl.tabBar.x1-pl.tabBar.x0)[m.tabMenu.index].startCol
+		tabMenuView = renderTabMenu(*m.tabMenu, startCol)
+	}
 
 	sections := []string{menuBar}
 	if dropdown != "" {
 		sections = append(sections, dropdown)
 	}
-	sections = append(sections, body, status)
+	sections = append(sections, body)
+	if tabMenuView != "" {
+		sections = append(sections, tabMenuView)
+	}
+	sections = append(sections, status)
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 

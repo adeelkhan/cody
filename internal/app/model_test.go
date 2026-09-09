@@ -1200,7 +1200,7 @@ func TestDraggingEditorTerminalBoundaryResizesTerminalHeight(t *testing.T) {
 	if m.terminalHeight != defaultTerminalHeight {
 		t.Fatalf("got terminalHeight=%d, want default %d", m.terminalHeight, defaultTerminalHeight)
 	}
-	_, _, _, terminalRect := m.paneLayout()
+	_, _, terminalRect := m.paneLayout()
 
 	updated, _ := m.Update(press(40, terminalRect.y0)) // terminal's own top border row
 	m = updated.(Model)
@@ -1228,7 +1228,7 @@ func TestDraggingEditorTerminalBoundaryResizesTerminalHeight(t *testing.T) {
 
 func TestDraggingEditorTerminalBoundaryClampsToMinAndMaxHeight(t *testing.T) {
 	m := setupSizedApp(t)
-	_, _, _, terminalRect := m.paneLayout()
+	_, _, terminalRect := m.paneLayout()
 
 	updated, _ := m.Update(press(40, terminalRect.y0))
 	m = updated.(Model)
@@ -1492,3 +1492,116 @@ func TestMoveTabToOtherPaneClosingPane0sOnlyTabWhilePane1SurvivesSwaps(t *testin
 		t.Fatalf("got pane0 tabs=%v, want just a.go (pane1's survivor swapped into slot 0)", m.panes[0].tabs)
 	}
 }
+
+func TestSplitRendersTwoTabBarsAndTwoEditorBoxes(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a\nline in a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b\nline in b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 0)
+
+	view := m.View()
+	if !strings.Contains(view, "a.go") || !strings.Contains(view, "b.go") {
+		t.Fatalf("expected both tab names visible in the split view")
+	}
+	if !strings.Contains(view, "line in a") || !strings.Contains(view, "line in b") {
+		t.Fatalf("expected both files' content visible side by side")
+	}
+}
+
+func TestDraggingSplitBoundaryResizesIt(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 0)
+	startCol := m.splitCol
+
+	_, panes, _ := m.paneLayout()
+	boundaryX := panes[0].editor.x1
+	updated, _ = m.Update(press(boundaryX, panes[0].editor.y0+1))
+	m = updated.(Model)
+	if m.resizeDrag != resizeEditorSplit {
+		t.Fatalf("got resizeDrag=%v, want resizeEditorSplit", m.resizeDrag)
+	}
+	updated, _ = m.Update(drag(boundaryX+10, panes[0].editor.y0+1))
+	m = updated.(Model)
+
+	if m.splitCol != startCol+10 {
+		t.Fatalf("got splitCol=%d, want %d", m.splitCol, startCol+10)
+	}
+}
+
+func TestClickInPane1SwitchesActivePaneAndPositionsCursor(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("line0\nline1\nline2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 1) // b.go -> pane1, activePane=1
+	m.activePane = 0               // simulate focus having moved back to pane0
+	m.focus = focusEditor
+
+	_, panes, _ := m.paneLayout()
+	pl := panes[1]
+	clickX := pl.editor.x0 + 1 + editorGutterWidthForTest()
+	clickY := pl.editor.y0 + 1 + 1 // second visible row -> "line1"
+	updated, _ = m.Update(tea.MouseMsg{X: clickX, Y: clickY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if m.activePane != 1 {
+		t.Fatalf("got activePane=%d, want 1", m.activePane)
+	}
+	line, _ := m.activeEditor().Cursor()
+	if line != 2 {
+		t.Fatalf("got cursor line=%d, want 2 (line1, 1-indexed)", line)
+	}
+}
+
+// editorGutterWidthForTest mirrors editor.editorGutterWidth (unexported,
+// different package) for tests that need to click past the gutter.
+func editorGutterWidthForTest() int { return 7 }
