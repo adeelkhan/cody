@@ -335,6 +335,40 @@ func (m Model) clampSplitCol(col int) int {
 	return min(result, m.width)
 }
 
+// resizeAllPanes recomputes the tree, every open tab's editor in every
+// pane (not just the active one), and the terminal's on-screen sizes from
+// the current m.width/m.height/m.treeWidth/m.terminalHeight/m.splitCol,
+// and pushes them into each's persisted state via SetSize. Shared by
+// Update's WindowSizeMsg branch and applyResizeDrag: both change the same
+// geometry inputs (a window resize changes m.width/m.height directly; a
+// boundary drag changes m.treeWidth/m.terminalHeight/m.splitCol), and a
+// pane's editor left at its stale size after either one would compute
+// scroll-offset/click-position math (see editor.Model.HandleClick,
+// ensureCursorVisible) against the wrong height — a background tab is the
+// same "unbounded" hazard openOrSwitch's own doc comment already covers
+// for a brand new tab.
+func (m Model) resizeAllPanes() Model {
+	paneHeight := m.height - menuBarHeight - statusBarHeight
+	editorHeight := paneHeight - m.terminalHeight - m.tabBarH()
+	// clampTreeWidth/clampTerminalHeight/clampSplitCol's degenerate-window
+	// handling (see clampInt) can still leave these negative on a window
+	// smaller than the panes' combined minimums (aggressive resizing) —
+	// floor every value handed to a pane's SetSize at 0, since a negative
+	// size reaching the terminal's real vt.Emulator panics rather than
+	// degrading gracefully.
+	m.tree = m.tree.SetSize(max(0, m.treeWidth-borderSize), max(0, paneHeight-borderSize))
+	widths := m.paneWidths()
+	for pi := range m.panes {
+		pw := max(0, widths[pi]-borderSize)
+		for i := range m.panes[pi].tabs {
+			m.panes[pi].tabs[i].editor = m.panes[pi].tabs[i].editor.SetSize(pw, max(0, editorHeight-borderSize))
+		}
+	}
+	termW := max(0, m.width-m.treeWidth-borderSize)
+	m.terminal = m.terminal.SetSize(termW, max(0, m.terminalHeight-borderSize))
+	return m
+}
+
 func (m Model) Init() tea.Cmd {
 	return nil
 }
@@ -360,30 +394,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tabMenu = nil
 			}
 		}
-		paneHeight := m.height - menuBarHeight - statusBarHeight
-		editorHeight := paneHeight - m.terminalHeight - m.tabBarH()
-		// clampTreeWidth/clampTerminalHeight's degenerate-window handling
-		// (see clampInt) can still leave these negative on a window smaller
-		// than the panes' combined minimums (aggressive resizing) — floor
-		// every value handed to a pane's SetSize at 0, since a negative
-		// size reaching the terminal's real vt.Emulator panics rather than
-		// degrading gracefully.
-		m.tree = m.tree.SetSize(max(0, m.treeWidth-borderSize), max(0, paneHeight-borderSize))
-		// Size every open tab's editor in every pane, not just the active
-		// one, and each at its OWN pane's width (paneWidths already
-		// accounts for the split, if any) — a background tab left at its
-		// stale (or zero) size would treat itself as "unbounded" once
-		// switched to or clicked in, breaking its scroll-offset math (see
-		// openOrSwitch's doc comment).
-		widths := m.paneWidths()
-		for pi := range m.panes {
-			pw := max(0, widths[pi]-borderSize)
-			for i := range m.panes[pi].tabs {
-				m.panes[pi].tabs[i].editor = m.panes[pi].tabs[i].editor.SetSize(pw, max(0, editorHeight-borderSize))
-			}
-		}
-		termW := max(0, m.width-m.treeWidth-borderSize)
-		m.terminal = m.terminal.SetSize(termW, max(0, m.terminalHeight-borderSize))
+		m = m.resizeAllPanes()
 		return m, nil
 	}
 	if _, ok := msg.(editor.RehighlightMsg); ok {
@@ -853,7 +864,13 @@ func (m Model) applyResizeDrag(x, y int) Model {
 	case resizeEditorSplit:
 		m.splitCol = m.clampSplitCol(x)
 	}
-	return m
+	// Propagate the new geometry into every pane's persisted editor state
+	// immediately, the same way WindowSizeMsg does (see resizeAllPanes'
+	// own doc comment) — View() itself would render correctly either way
+	// (it recomputes each pane's size fresh, on a value-receiver copy),
+	// but a click or scroll landing before the next WindowSizeMsg would
+	// otherwise compute against each editor's still-stale stored height.
+	return m.resizeAllPanes()
 }
 
 // clampTreeWidth keeps a candidate tree-pane width within [minTreeWidth,

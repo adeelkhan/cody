@@ -2009,6 +2009,79 @@ func TestSplitColumnReClampsWhenTreeBorderIsDraggedTowardIt(t *testing.T) {
 	}
 }
 
+// TestDraggingTerminalBoundaryUpdatesEditorViewportBeforeAnyClick covers a
+// bot-review finding on the fix-wave diff itself (Greptile, PR #5):
+// applyResizeDrag changed m.terminalHeight (and therefore the on-screen
+// editorHeight) without pushing that new size into the pane's persisted
+// editor.Model via SetSize — only WindowSizeMsg did that. View() itself
+// always rendered correctly (it recomputes a fresh SetSize copy every
+// frame), but a click landing before the next WindowSizeMsg computed
+// against the editor's stale stored scrollOffset, targeting a different
+// line than what was actually on screen at that row.
+func TestDraggingTerminalBoundaryUpdatesEditorViewportBeforeAnyClick(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "big.txt")
+	var lines []string
+	for i := 0; i < 200; i++ {
+		lines = append(lines, fmt.Sprintf("line%03d", i))
+	}
+	if err := os.WriteFile(file, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: file})
+	m = updated.(Model)
+
+	// Same setup as TestScrollThenClickInNewTabPositionsCursorAtVisibleLine:
+	// paneHeight=22, terminalHeight=8, tabBarH=1, so the editor's content
+	// height is 11 rows. 10 wheel notches * mouseWheelLines(3) moves the
+	// cursor to (0-indexed) line 30, forcing scrollOffset to 30-11+1=20.
+	for i := 0; i < 10; i++ {
+		updated, _ = m.Update(tea.MouseMsg{X: 45, Y: 5, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+		m = updated.(Model)
+	}
+
+	// Drag the terminal boundary to shrink the editor's content height from
+	// 11 rows to 4: terminalRect.y1 = bodyTop(1) + paneHeight(22) = 23: to
+	// land terminalHeight at 15 (giving editorHeight = 22-15-1 = 6 outer,
+	// 4 interior after the 2-cell border), drag to y = 23-15 = 8.
+	m.resizeDrag = resizeTerminal
+	m = m.applyResizeDrag(45, 8)
+	if m.terminalHeight != 15 {
+		t.Fatalf("test setup: got terminalHeight=%d after the drag, want 15", m.terminalHeight)
+	}
+
+	// If the drag correctly propagated into the editor's stored state,
+	// ensureCursorVisible (cursor still at line 30, viewport now only 4
+	// rows tall) re-clamps scrollOffset to 30-4+1=27 — line 27 is now the
+	// top row. Verify independently, off the actually-rendered frame, not
+	// by re-deriving the expected value through the same click path being
+	// tested: search m.View() for "line027" and confirm it's the editor
+	// pane's own top content row.
+	lines2 := strings.Split(m.View(), "\n")
+	bodyTop, tabBarH, border := 1, 1, 1
+	topRow := bodyTop + tabBarH + border // = 3
+	if topRow >= len(lines2) || !strings.Contains(lines2[topRow], "line027") {
+		t.Fatalf("test setup: expected rendered row %d to show line027 after the drag (scrollOffset should re-clamp to 27); rendered rows: %q", topRow, lines2)
+	}
+
+	// A click at the pane's own top row (relY=0) must select the line
+	// that's actually rendered there (line 27, 0-indexed — 28 as Cursor()
+	// reports it, 1-indexed) — not line 20 (the pre-drag scrollOffset,
+	// which the buggy code would still be using).
+	updated, _ = m.Update(tea.MouseMsg{X: 45, Y: topRow, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+	line, _ := m.activeEditor().Cursor()
+	if line != 28 {
+		t.Fatalf("got cursor line=%d after clicking the editor's top row post-drag, want 28 (line027, 0-indexed 27, 1-indexed 28) — the click must target what's actually rendered there, not a stale pre-drag scrollOffset", line)
+	}
+}
+
 // TestSplitColumnNeverExceedsWidthOnAnAggressivelyShrunkWindow covers the
 // final-review fix wave's re-review residual on Critical 3: on a window
 // too small even for its own minTreeWidth, clampTreeWidth's own degenerate
