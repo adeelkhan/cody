@@ -1505,6 +1505,49 @@ func TestPlainCtrlArrowCollapsesSelection(t *testing.T) {
 	}
 }
 
+// Regression test (found by automated PR review): clicking a fold-toggle
+// gutter moves the cursor to that line without clamping cursorCol against
+// the new line's length (HandleClick's fold-toggle branch only sets
+// m.cursorLine, unlike its own fall-through cursor-placing branch, which
+// does clamp). A cursorCol left over from a longer line then indexes past
+// the end of a shorter line — moveWordRight silently produced a stale
+// value, but moveWordLeft's runes[i-1] indexing panicked outright.
+func TestCtrlLeftAfterFoldClickLeavesStaleColumnDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	src := "package main\n\nfunc add(a int, b int) int {\n\treturn a + 42\n}\n\nfunc f() int {\n\treturn 1\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := New()
+	m, err := m.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = m.SetSize(60, 20)
+
+	// Line 2 ("func add(a int, b int) int {") is 29 runes; put the cursor
+	// at its end.
+	m.cursorLine = 2
+	m.cursorCol = 29
+
+	// Click the fold gutter of line 6 ("func f() int {", only 14 runes) —
+	// no other lines are folded, so visible row index == buffer line index.
+	m, _ = m.HandleClick(0, 6)
+	if m.cursorLine != 6 {
+		t.Fatalf("setup failed: got cursorLine=%d, want 6", m.cursorLine)
+	}
+	if m.cursorCol <= len([]rune(m.buf.Lines[6])) {
+		t.Fatalf("setup failed: expected a stale cursorCol=%d past line 6's length, want it to still be 29", m.cursorCol)
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlLeft}) // must not panic
+
+	if m.cursorCol > len([]rune(m.buf.Lines[6])) {
+		t.Fatalf("got cursorCol=%d, want it clamped to line 6's length (%d)", m.cursorCol, len([]rune(m.buf.Lines[6])))
+	}
+}
+
 func TestCtrlRightOnEmptyLineIsANoOp(t *testing.T) {
 	m := setupEditor(t, "")
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
