@@ -1849,6 +1849,54 @@ func TestRightClickedTabMenuInSplitViewFitsOnScreenAndItsClickTargetMatchesWhere
 		t.Fatal("test setup: tabMenuStartCol() reported not ok")
 	}
 	top := m.tabMenuTop()
+	// Verify top independently of tabMenuTop() itself — asserting only
+	// top == m.tabMenuTop() would be tautological (handleClick's hit-test
+	// also calls tabMenuTop(), so a wrong value there would agree with
+	// itself and this test would still pass). No dropdown is open here,
+	// so the row must be exactly menuBarHeight, and the rendered frame
+	// must actually show the menu text on that row.
+	if top != menuBarHeight {
+		t.Fatalf("got tabMenuTop()=%d, want %d (menuBarHeight; no File/Edit dropdown is open)", top, menuBarHeight)
+	}
+	// The rendered box is bordered (dropdownStyle), so its text sits one
+	// row below its own top border — find the text's actual row by
+	// scanning the rendered frame directly (not via tabMenuTop()) and
+	// check it lands exactly where top+1 says it should.
+	lines := strings.Split(m.View(), "\n")
+	textRow := -1
+	for i, line := range lines {
+		if strings.Contains(line, "Split + Move Right") {
+			textRow = i
+			break
+		}
+	}
+	if textRow != top+1 {
+		t.Fatalf("got the tab menu's text on rendered row %d, want row %d (tabMenuTop()+1, for the box's top border); rendered rows: %q", textRow, top+1, lines)
+	}
+	// Verify width independently of the hit-test's own hi bound too: the
+	// visible box (rendered with no margin) must end well before the
+	// terminal's right edge, and a click just past that visible box must
+	// NOT select the item — proves the hit-test isn't using the
+	// margin-inflated width (dropdownStyle.MarginLeft(startCol) baked
+	// into renderTabMenu's own output).
+	visibleWidth := lipgloss.Width(renderTabMenu(*m.tabMenu, 0))
+	justPastVisibleBox := startCol + visibleWidth + 1
+	if justPastVisibleBox >= m.width {
+		t.Fatalf("test setup: startCol=%d visibleWidth=%d leaves no room past the box within width=%d", startCol, visibleWidth, m.width)
+	}
+	probeUpdated, _ := m.Update(tea.MouseMsg{X: justPastVisibleBox, Y: top, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	probe := probeUpdated.(Model)
+	// A left click always clears m.tabMenu, whether it hit (select) or
+	// missed (plain dismiss) — so the tell isn't tabMenu itself, it's
+	// whether the item's action (moveTabToOtherPane, which here collapses
+	// pane0 away since b.go is its only tab) actually ran.
+	if probe.tabMenu != nil {
+		t.Fatalf("test setup: click at x=%d didn't clear m.tabMenu at all", justPastVisibleBox)
+	}
+	if len(probe.panes) != len(m.panes) {
+		t.Fatalf("click at x=%d (just past the visible menu box, which ends at %d) wrongly ran the tab menu's action (panes went from %d to %d) — hit-test width must not include the anchor margin", justPastVisibleBox, startCol+visibleWidth, len(m.panes), len(probe.panes))
+	}
+
 	beforePanes := len(m.panes)
 	updated, _ = m.Update(tea.MouseMsg{X: startCol, Y: top, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	m = updated.(Model)
@@ -1958,6 +2006,60 @@ func TestSplitColumnReClampsWhenTreeBorderIsDraggedTowardIt(t *testing.T) {
 	}
 	if panes[1].editor.x1 <= panes[1].editor.x0 {
 		t.Fatalf("got panes[1] editor rect x0=%d x1=%d, want x1 > x0 (the right pane must not invert)", panes[1].editor.x0, panes[1].editor.x1)
+	}
+}
+
+// TestSplitColumnNeverExceedsWidthOnAnAggressivelyShrunkWindow covers the
+// final-review fix wave's re-review residual on Critical 3: on a window
+// too small even for its own minTreeWidth, clampTreeWidth's own degenerate
+// handling (see clampInt's hi<lo branch) can still leave m.treeWidth at
+// minTreeWidth despite m.width having no room for it. Re-clamping splitCol
+// from that inflated treeWidth then pushed clampSplitCol's own lo bound
+// past m.width, and clampInt's hi<lo branch returned that lo verbatim —
+// past the terminal's own width — inverting pane 1's rect. splitCol must
+// never exceed m.width, however degenerate the window.
+func TestSplitColumnNeverExceedsWidthOnAnAggressivelyShrunkWindow(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileA})
+	m = updated.(Model)
+	updated, _ = m.Update(filetree.FileOpenedMsg{Path: fileB})
+	m = updated.(Model)
+	m = m.moveTabToOtherPane(0, 0) // split; splitCol defaults to 115
+
+	// Shrink well below minTreeWidth+minEditorWidth (35): clampTreeWidth's
+	// degenerate branch forces treeWidth to minTreeWidth (15) even though
+	// width=20 leaves no room for it.
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 20, Height: 30})
+	m = updated.(Model)
+
+	if m.splitCol > m.width {
+		t.Fatalf("got splitCol=%d, width=%d — splitCol must never exceed the terminal's own width", m.splitCol, m.width)
+	}
+	widths := m.paneWidths()
+	for i, w := range widths {
+		if w < 0 {
+			t.Fatalf("got paneWidths()[%d]=%d, want >= 0 (a negative pane width means its rect inverted)", i, w)
+		}
+	}
+	_, panes, _ := m.paneLayout()
+	for i, pl := range panes {
+		if pl.editor.x1 < pl.editor.x0 {
+			t.Fatalf("got panes[%d] editor rect x0=%d x1=%d, want x1 >= x0 (must not invert)", i, pl.editor.x0, pl.editor.x1)
+		}
 	}
 }
 

@@ -194,17 +194,6 @@ func (m Model) tabBarH() int {
 	return 0
 }
 
-// newTabEditorSize computes the width/height a newly opened tab's editor
-// should be sized at, matching what Update's WindowSizeMsg branch and
-// View() compute for the active editor. It always uses the "at least one
-// tab" editor-height formula (i.e. reserves tabBarHeight), even if m.tabs
-// is currently empty: the tab being opened is about to make m.tabs
-// non-empty, so the tab bar is about to appear.
-//
-// The result is floored at 0: on a window smaller than the panes' combined
-// minimums, clampTreeWidth/clampTerminalHeight's degenerate handling (see
-// clampInt) can still leave this arithmetic negative, and a negative size
-// must never reach a pane's SetSize.
 // paneWidths returns each pane's on-screen width (border included):
 // unsplit, the one pane spans the full editor column; split, each spans
 // its own share either side of m.splitCol. Shared by View()'s rendering,
@@ -221,6 +210,17 @@ func (m Model) paneWidths() []int {
 	return widths
 }
 
+// newTabEditorSize computes the width/height a newly opened tab's editor
+// should be sized at, matching what Update's WindowSizeMsg branch and
+// View() compute for the active editor. It always uses the "at least one
+// tab" editor-height formula (i.e. reserves tabBarHeight), even if m.tabs
+// is currently empty: the tab being opened is about to make m.tabs
+// non-empty, so the tab bar is about to appear.
+//
+// The result is floored at 0: on a window smaller than the panes' combined
+// minimums, clampTreeWidth/clampTerminalHeight's degenerate handling (see
+// clampInt) can still leave this arithmetic negative, and a negative size
+// must never reach a pane's SetSize.
 func (m Model) newTabEditorSize() (width, height int) {
 	paneHeight := m.height - menuBarHeight - statusBarHeight
 	editorHeight := paneHeight - m.terminalHeight - tabBarHeight
@@ -321,7 +321,18 @@ func (m Model) defaultSplitCol() int {
 // [m.treeWidth+minEditorWidth, m.width-minEditorWidth] so dragging (or an
 // initial split) can never collapse either side below minEditorWidth.
 func (m Model) clampSplitCol(col int) int {
-	return clampInt(col, m.treeWidth+minEditorWidth, m.width-minEditorWidth)
+	result := clampInt(col, m.treeWidth+minEditorWidth, m.width-minEditorWidth)
+	// On a window too small even for its own minimums, clampTreeWidth's
+	// degenerate handling (see clampInt) can still leave m.treeWidth at
+	// minTreeWidth, pushing this clamp's own lo bound (m.treeWidth+
+	// minEditorWidth) past m.width-minEditorWidth — clampInt's hi<lo
+	// branch then returns that inflated lo verbatim, past m.width itself,
+	// which inverts pane 1's rect (width = m.width-splitCol < 0). Capping
+	// at m.width here can't invert pane 0's rect in exchange: its width is
+	// splitCol-m.treeWidth, and splitCol's lo bound is always
+	// m.treeWidth+minEditorWidth, so splitCol never drops below
+	// m.treeWidth regardless of which clampInt branch produced it.
+	return min(result, m.width)
 }
 
 func (m Model) Init() tea.Cmd {
@@ -519,7 +530,12 @@ func (m Model) handleClick(x, y int) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		rendered := renderTabMenu(*m.tabMenu, startCol)
-		width := lipgloss.Width(rendered)
+		// Measure width off an unmargined render: renderTabMenu bakes
+		// startCol in as MarginLeft, so lipgloss.Width(rendered) would
+		// count that margin as part of the box, making the clickable
+		// zone startCol-columns too wide and accepting clicks well past
+		// the visible menu.
+		width := lipgloss.Width(renderTabMenu(*m.tabMenu, 0))
 		top := m.tabMenuTop()
 		height := lipgloss.Height(rendered)
 		if x >= startCol && x < startCol+width && y >= top && y < top+height {
