@@ -56,6 +56,9 @@ between the editor and terminal to resize the terminal. Both panes have a
 minimum size, and the editor/tree on the other side of the drag always keeps
 enough room to stay usable.
 
+Any open dialog (Open, Find, palette, About, unsaved-changes confirmation,
+New/Rename) can be dismissed with a left click anywhere, same as `Esc`.
+
 ### Project tree
 
 | Key | Action |
@@ -78,6 +81,8 @@ in the tree — type the name and `Enter` to confirm, `Esc` to cancel.
 | `Home` / `End` | Start / end of line |
 | `Page Up` / `Page Down` | Scroll by page |
 | `Shift+Arrow` | Extend selection¹ |
+| `Ctrl+Left` / `Ctrl+Right` | Jump to previous / next word boundary |
+| `Ctrl+Shift+Left` / `Ctrl+Shift+Right` | Extend selection by word¹ |
 | `Backspace` / `Delete` | Delete character |
 | `Enter` | Insert newline |
 | `Ctrl+S` | Save file |
