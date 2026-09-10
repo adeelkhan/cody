@@ -2213,7 +2213,7 @@ func TestNewStartsWithExactlyOneUnstartedTerminalTab(t *testing.T) {
 	}
 }
 
-func TestCmdNewTerminalTabAppendsAndActivatesWithoutStartingIt(t *testing.T) {
+func TestCmdNewTerminalTabAppendsActivatesAndStartsIt(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, false)
 	if err != nil {
@@ -2232,8 +2232,8 @@ func TestCmdNewTerminalTabAppendsAndActivatesWithoutStartingIt(t *testing.T) {
 	if m.focus != focusTerminal {
 		t.Fatal("expected cmdNewTerminalTab to focus the terminal pane")
 	}
-	if m.terminals[1].term.Started() {
-		t.Fatal("expected the new tab to not be started by cmdNewTerminalTab itself — that's maybeStartActiveTerminal's job")
+	if !m.terminals[1].term.Started() {
+		t.Fatal("expected cmdNewTerminalTab to start the new tab's shell immediately, since it also focuses it")
 	}
 	if m.terminals[1].term.ID() == m.terminals[0].term.ID() {
 		t.Fatalf("got both tabs' ID()=%d, want distinct ids", m.terminals[1].term.ID())
@@ -2330,15 +2330,13 @@ func TestBackgroundTerminalTabOutputMsgIsRoutedToItsOwnEmulatorNotTheActiveOne(t
 	}
 
 	t.Cleanup(func() { m.terminals[0].term.Close() })
+	t.Cleanup(func() { m.terminals[1].term.Close() })
 
 	updated, _ := m.Update(out)
 	m = updated.(Model)
 
 	if m.terminals[0].term.View() == "Terminal not started" {
 		t.Fatal("expected tab 0's OutputMsg to have been applied to tab 0, not silently dropped")
-	}
-	if m.terminals[1].term.Started() {
-		t.Fatal("expected tab 0's OutputMsg to leave tab 1 (the active, but unrelated, tab) untouched")
 	}
 }
 

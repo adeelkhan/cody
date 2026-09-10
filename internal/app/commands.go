@@ -60,18 +60,21 @@ func cmdNewBlankTab(m Model) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// cmdNewTerminalTab appends a new, not-yet-started terminal tab, activates
-// and focuses it, but deliberately does not start its shell itself —
-// starting is maybeStartActiveTerminal's job, triggered by a subsequent
-// focus change (tab/shift+tab, a pane click) the same way it is for any
-// other newly-focused terminal tab.
+// cmdNewTerminalTab appends a new terminal tab, activates and focuses it,
+// then starts its shell immediately via maybeStartActiveTerminal — since
+// focus is already focusTerminal by that point, this isn't a no-op the way
+// it would be from some other focus. Starting it here (rather than waiting
+// for some later, unrelated focus-change event) matters: without it, a
+// user who presses Ctrl+T and immediately starts typing would have every
+// keystroke silently swallowed by terminal.Model.handleKey's nil-pty guard
+// until something else happened to trigger a start.
 func cmdNewTerminalTab(m Model) (Model, tea.Cmd) {
 	m.nextTerminalID++
 	m.terminals = append(m.terminals, terminalTab{term: terminal.New(m.nextTerminalID)})
 	m.activeTerminal = len(m.terminals) - 1
 	m.focus = focusTerminal
 	m.recentCommand = "New terminal"
-	return m, nil
+	return m.maybeStartActiveTerminal()
 }
 
 func cmdCut(m Model) (Model, tea.Cmd) {
