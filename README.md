@@ -15,16 +15,23 @@ A terminal-based code editor written in Go.
 - **Incremental search** — `Ctrl+F` opens an in-buffer find dialog; case-insensitive
   substring matching, live match-jump as you type, `Enter`/`Shift+Enter` cycle
   next/previous, `Esc` closes
-- **Embedded terminal** — real shell pane (spawned on first focus); full
-  interactivity: `vim`, `htop`, `ssh`, `Ctrl+C`, etc.
+- **Embedded terminal** — real shell pane; full interactivity: `vim`, `htop`,
+  `ssh`, `Ctrl+C`, etc.
+- **Terminal tabs** — `Ctrl+T` opens a new, fully independent shell session as
+  its own tab (own pty, own scrollback); click to switch, click a tab's `×` to
+  close it
+- **Split-view editor** — right-click a tab and choose "Split + Move Right" to
+  open a second editor pane; each pane is independently editable, scrollable,
+  and resizable, and tabs can be moved between panes from the same menu
 - **Edit operations** — `Ctrl+X`/`Ctrl+C`/`Ctrl+V` cut/copy/paste (internal
   clipboard), `Ctrl+Z`/`Ctrl+Y` undo/redo, `Shift+Arrow` selection
 - **Command palette** — click `Commands` in the menu bar (or use the palette
   shortcut) to search and run any registered command
 - **File open dialog** — `Ctrl+O` to open a file by path (relative to project root
   or absolute)
-- **Resizable panes** — drag the tree's right border to resize it, or the boundary
-  between the editor and terminal to resize the terminal
+- **Resizable panes** — drag the tree's right border to resize it, the boundary
+  between the editor and terminal, or (once split) the boundary between the
+  two editor panes
 - **Status bar** — project name, most-recent command, cursor position, file type
 
 ## Build & run
@@ -49,12 +56,14 @@ make test                         # runs the test suite (go test ./...)
 | `Ctrl+N` | New blank ("Untitled") tab — `Ctrl+S` on it prompts for a save path |
 | `Ctrl+O` | Open file by path |
 | `Ctrl+F` | Find in current buffer |
-| `Ctrl+Q` | Quit (cleanly terminates the spawned shell; prompts if any tab has unsaved changes) |
+| `Ctrl+T` | New terminal tab (starts its shell immediately) |
+| `Ctrl+Q` | Quit (cleanly terminates every open shell; prompts if any tab has unsaved changes) |
 
-Click and drag the tree pane's right border to resize it, or the boundary
-between the editor and terminal to resize the terminal. Both panes have a
-minimum size, and the editor/tree on the other side of the drag always keeps
-enough room to stay usable.
+Click and drag the tree pane's right border to resize it, the boundary
+between the editor and terminal to resize the terminal, or (once the editor
+is split) the boundary between the two editor panes to resize them relative
+to each other. Every pane has a minimum size, and the pane on the other side
+of a drag always keeps enough room to stay usable.
 
 Any open dialog (Open, Find, palette, About, unsaved-changes confirmation,
 New/Rename) can be dismissed with a left click anywhere, same as `Esc`.
@@ -90,6 +99,21 @@ in the tree — type the name and `Enter` to confirm, `Esc` to cancel.
 | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
 | `Ctrl+K` | Toggle code fold at cursor line |
 
+### Editor tabs
+
+| Action | Effect |
+|--------|--------|
+| Click a tab | Switch to it |
+| Click a tab's `×` | Close it (prompts if it has unsaved changes) |
+| Right-click a tab | Open a menu to move it into a split |
+
+Right-clicking a tab in the left (or only) pane offers **Split + Move
+Right**: opens a second editor pane and moves that tab into it. Each pane
+keeps its own tab bar and is independently editable, scrollable, and
+resizable. Right-clicking a tab in the right pane offers **Move Left** to
+move it back — moving the split's last tab out of either pane collapses
+back to a single pane.
+
 ### Find dialog (`Ctrl+F`)
 
 | Key | Action |
@@ -101,9 +125,16 @@ in the tree — type the name and `Enter` to confirm, `Esc` to cancel.
 
 ### Terminal pane
 
+The terminal pane supports multiple independent tabs, each its own shell
+session (own pty, own scrollback) — click a tab to switch to it, click its
+`×` to close it. The terminal pane itself can't be closed: closing the last
+remaining tab resets it to a fresh, unstarted session rather than closing
+the pane. `Ctrl+T` opens a new tab and starts its shell immediately.
+
 While the terminal pane has focus, keystrokes go directly to the shell.
 `Ctrl+S`/`Ctrl+X`/`Ctrl+C`/`Ctrl+V`/`Ctrl+Z`/`Ctrl+Y`/`Ctrl+K`/`Ctrl+F` pass
-through to the shell. Only `Ctrl+O` and `Ctrl+Q` stay global.
+through to the shell. Only `Ctrl+O`, `Ctrl+N`, `Ctrl+T`, and `Ctrl+Q` stay
+global.
 
 ### Menu bar
 
