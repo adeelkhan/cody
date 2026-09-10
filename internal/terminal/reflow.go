@@ -122,3 +122,27 @@ func cursorAfterRewrap(newRows []string, offset int) (row, col int) {
 	last := len(newRows) - 1
 	return last, ansi.StringWidth(newRows[last])
 }
+
+// reflowRows re-wraps every physical row in rows (at oldWidth) to
+// newWidth, and maps (cursorRow, cursorCol) — both 0-indexed physical
+// coordinates — into the new layout. This is the single entry point
+// Model.SetSize calls; it is stateless (nothing here reads or writes
+// any field that persists across calls) — every call re-derives
+// entirely from the rows it's given, which is what makes this robust
+// against a shell redrawing or scrolling mid-resize (see the design
+// spec's §3.4): there is no earlier-moment snapshot for such a redraw
+// to invalidate.
+func reflowRows(rows []string, oldWidth, newWidth, cursorRow, cursorCol int) (newRows []string, newCursorRow, newCursorCol int) {
+	lines, counts := groupIntoLogicalLines(rows, oldWidth)
+	cursorLine, offset := cursorOffset(rows, counts, cursorRow, cursorCol)
+	for li, line := range lines {
+		rewrapped := rewrapLogicalLine(line, newWidth)
+		if li == cursorLine {
+			r, c := cursorAfterRewrap(rewrapped, offset)
+			newCursorRow = len(newRows) + r
+			newCursorCol = c
+		}
+		newRows = append(newRows, rewrapped...)
+	}
+	return newRows, newCursorRow, newCursorCol
+}

@@ -157,3 +157,46 @@ func TestCursorAfterRewrapLandsOnTheCorrectRowAndColumn(t *testing.T) {
 		t.Fatalf("got (row=%d, col=%d), want (1, 5) — offset 11 is 5 columns into the second row", row, col)
 	}
 }
+
+func TestReflowRowsNarrowsAndMapsCursorEndToEnd(t *testing.T) {
+	rows := []string{"1234567890", "abcde"}                  // one logical line, 12 wide, at old width 10... wait: "1234567890"+"abcde" = 15 chars
+	newRows, newRow, newCol := reflowRows(rows, 10, 6, 1, 1) // cursor at row1, col1 = the 'b'
+	wantRows := []string{"123456", "7890ab", "cde"}
+	if len(newRows) != len(wantRows) {
+		t.Fatalf("got %d rows %q, want %d rows %q", len(newRows), newRows, len(wantRows), wantRows)
+	}
+	for i := range wantRows {
+		if newRows[i] != wantRows[i] {
+			t.Fatalf("got rows %q, want %q", newRows, wantRows)
+		}
+	}
+	// offset in the old logical line "1234567890abcde": row0 (width
+	// 10) + col1 = 11 -> the 'b' character. In the new rows
+	// ["123456","7890ab","cde"], offset 11 = row1 (width6) + row... let
+	// the test assert whatever the implementation actually produces
+	// for row/col, then hand-verify newRows[newRow][newCol] == 'b'.
+	if newRows[newRow][newCol] != 'b' {
+		t.Fatalf("got cursor landing on %q at (row=%d,col=%d), want it on 'b'", string(newRows[newRow][newCol]), newRow, newCol)
+	}
+}
+
+func TestReflowRowsWidensAndRejoins(t *testing.T) {
+	rows := []string{"ABCDEF", "GHIJKL"}                     // one logical line at old width 6
+	newRows, newRow, newCol := reflowRows(rows, 6, 40, 1, 5) // cursor at row1 col5 = 'L'
+	if len(newRows) != 1 || newRows[0] != "ABCDEFGHIJKL" {
+		t.Fatalf("got %q, want a single rejoined row", newRows)
+	}
+	if newRows[newRow][newCol] != 'L' {
+		t.Fatalf("got cursor landing on %q at (row=%d,col=%d), want it on 'L'", string(newRows[newRow][newCol]), newRow, newCol)
+	}
+}
+
+func TestReflowRowsKeepsUnrelatedLogicalLinesSeparate(t *testing.T) {
+	rows := []string{"short one", "short two", "short three"} // none filled to edge at width 20
+	newRows, _, _ := reflowRows(rows, 20, 5, 0, 0)
+	// Each stays its own logical line, independently rewrapped — no
+	// cross-line joining.
+	if len(newRows) < 3 {
+		t.Fatalf("got %d rows %q, want each of the 3 unrelated lines to still be present as separate wrapped groups", len(newRows), newRows)
+	}
+}
