@@ -23,19 +23,25 @@ type Emulator interface {
 	// scrollback line at index (0 = oldest), or "" if index is out of
 	// range.
 	ScrollbackLine(index int) string
+	// IsAltScreen reports whether the terminal is currently showing its
+	// alternate screen (full-screen apps like vim/htop/less switch to
+	// this while running). The alt screen doesn't use the main screen's
+	// scrollback buffer — ScrollbackLen/ScrollbackLine here would return
+	// unrelated, stale content from before the app started — so callers
+	// must treat "alt screen active" as "no scrollback available" rather
+	// than blending the two.
+	IsAltScreen() bool
 }
 
 // vtEmulator adapts *vt.Emulator to this package's narrower Emulator
 // interface — vt.Emulator itself has no ScrollbackLine(index) string
 // method (its Scrollback() returns a *vt.Scrollback of vt/uv-typed Lines,
 // not a plain string), so this wraps it rather than returning *vt.Emulator
-// directly from newEmulator.
+// directly from newEmulator. ScrollbackLen and IsAltScreen need no
+// forwarding method of their own — *vt.Emulator already has matching
+// signatures for both, promoted automatically through the embedded field.
 type vtEmulator struct {
 	*vt.Emulator
-}
-
-func (e vtEmulator) ScrollbackLen() int {
-	return e.Emulator.ScrollbackLen()
 }
 
 func (e vtEmulator) ScrollbackLine(index int) string {

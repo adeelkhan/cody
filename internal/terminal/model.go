@@ -121,9 +121,14 @@ func (m Model) Started() bool {
 // underlying emulator currently holds, so this never over- or
 // under-scrolls even as the buffer grows or gets capped. A no-op before
 // the session has started (m.emu == nil, nothing to measure a scrollback
-// length against).
+// length against), and while the alt screen is active (see View's own
+// alt-screen note) — there's nothing valid to scroll into.
 func (m Model) ScrollLines(n int) Model {
 	if m.emu == nil {
+		return m
+	}
+	if m.emu.IsAltScreen() {
+		m.scrollOffset = 0
 		return m
 	}
 	m.scrollOffset -= n
@@ -250,7 +255,16 @@ func (m Model) View() string {
 	if m.emu == nil {
 		return "Terminal not started"
 	}
-	if m.scrollOffset == 0 {
+	// The alt screen (vim, htop, less, ...) doesn't share the main
+	// screen's scrollback (vt.Emulator.Scrollback() always reports the
+	// main screen's, regardless of which is active) — rendering scrolled
+	// while it's up would splice unrelated, stale pre-app content in
+	// among the app's own live rows. Fall back to the plain live render
+	// unconditionally in that case, even if scrollOffset is still
+	// sitting >0 from before the app started (ScrollLines resets it back
+	// to 0 on the next scroll attempt, but View() can't wait for that —
+	// it must render correctly on the very next frame regardless).
+	if m.scrollOffset == 0 || m.emu.IsAltScreen() {
 		return m.emu.Render()
 	}
 	return m.renderScrolledView()

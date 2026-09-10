@@ -883,9 +883,9 @@ func (m Model) handleRightClick(x, y int) (tea.Model, tea.Cmd) {
 
 // handleWheel scrolls whichever pane's rectangle contains (x, y) — the pane
 // under the pointer, not necessarily the focused one — by delta lines
-// (negative scrolls up). No-op outside any pane, over the terminal (which
-// has no independent scroll-only view), or while a dialog or dropdown is
-// open.
+// (negative scrolls up). Over the terminal pane, this scrolls the active
+// tab's scrollback (terminal.Model.ScrollLines). No-op outside any pane,
+// or while a dialog or dropdown is open.
 func (m Model) handleWheel(x, y, delta int) (tea.Model, tea.Cmd) {
 	if m.activeDialog != dialogNone || m.openMenu != "" {
 		return m, nil

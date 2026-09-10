@@ -70,6 +70,7 @@ type fakeEmulator struct {
 	// when that growth is observed relative to Update's own
 	// before/after ScrollbackLen() measurement.
 	pushOnWrite []string
+	altScreen   bool
 }
 
 func (f *fakeEmulator) Write(p []byte) (int, error) {
@@ -99,6 +100,10 @@ func (f *fakeEmulator) ScrollbackLine(index int) string {
 		return ""
 	}
 	return f.sbLines[index]
+}
+
+func (f *fakeEmulator) IsAltScreen() bool {
+	return f.altScreen
 }
 
 func withFakes(t *testing.T, p *fakePty, e *fakeEmulator) {
@@ -496,5 +501,54 @@ func TestOutputReceivedWhileFollowingStaysAtOffsetZero(t *testing.T) {
 
 	if m.scrollOffset != 0 {
 		t.Fatalf("got scrollOffset=%d after output arrived while following, want 0 (nothing to pin — the live view keeps following automatically)", m.scrollOffset)
+	}
+}
+
+// TestScrollLinesIsANoOpDuringAltScreen and
+// TestViewIgnoresStaleScrollOffsetWhenAltScreenBecomesActive cover a real
+// correctness bug caught by review on the original version of this
+// feature: vt.Emulator.Scrollback() always reports the MAIN screen's
+// scrollback, even while a full-screen app (vim, htop, less) has switched
+// to the alternate screen — so scrolling during one of those apps used to
+// splice stale pre-app shell history in among the app's own live rows.
+
+func TestScrollLinesIsANoOpDuringAltScreen(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2"}, altScreen: true}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+
+	m = m.ScrollLines(-1)
+
+	if m.scrollOffset != 0 {
+		t.Fatalf("got scrollOffset=%d after scrolling during alt screen, want 0 (real terminals don't scroll into stale main-screen history while a full-screen app owns the display)", m.scrollOffset)
+	}
+}
+
+func TestViewIgnoresStaleScrollOffsetWhenAltScreenBecomesActive(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+	m = m.ScrollLines(-1) // paused, viewing scrollback, still on the main screen
+	if m.scrollOffset == 0 {
+		t.Fatal("test setup: expected scrollOffset > 0 after scrolling up")
+	}
+
+	// Simulate a full-screen app (vim, htop, less) taking over the
+	// display without the user scrolling again in between — matches how
+	// the real vt.Emulator's IsAltScreen() flips the moment the app's
+	// escape sequence arrives, independent of anything this package does.
+	e.altScreen = true
+	e.written = []byte("vim-line-A\nvim-line-B\nvim-line-C")
+
+	view := m.View()
+	want := "vim-line-A\nvim-line-B\nvim-line-C"
+	if view != want {
+		t.Fatalf("got View()=%q while alt screen is active with a stale scrollOffset, want %q — the live alt-screen content, not blended with stale main-screen scrollback", view, want)
 	}
 }
