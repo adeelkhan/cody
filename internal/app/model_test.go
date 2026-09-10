@@ -756,15 +756,29 @@ func TestWheelOverTerminalPaneScrollsIntoRealScrollback(t *testing.T) {
 		t.Fatalf("test setup: expected scrollback-row-1 to have already scrolled out of the live view before scrolling; view:\n%s", m.View())
 	}
 
+	// Scroll up one wheel notch at a time, checking after each, rather
+	// than assuming a fixed notch count lands exactly on
+	// scrollback-row-1 — a real shell's own startup banner (this
+	// machine's .zshrc emits a couple of long, path-wrapping error
+	// lines) can push the exact scroll distance around, since it adds an
+	// unpredictable, environment-specific amount of content ahead of
+	// anything this test actually typed. A generous notch budget still
+	// bounds the loop so a genuine regression (scrolling not working at
+	// all) fails promptly instead of hanging.
 	_, _, term := m.paneLayout()
 	x, y := term.terminal.x0+2, term.terminal.y0+1
-	for i := 0; i < 10; i++ {
+	found := false
+	for i := 0; i < 30; i++ {
 		updated, _ = m.Update(tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
 		m = updated.(Model)
+		if strings.Contains(m.View(), "scrollback-row-1") {
+			found = true
+			break
+		}
 	}
 
-	if !strings.Contains(m.View(), "scrollback-row-1") {
-		t.Fatalf("expected scrolling the wheel over the terminal pane to reveal scrollback-row-1, want it visible; view:\n%s", m.View())
+	if !found {
+		t.Fatalf("expected scrolling the wheel over the terminal pane to reveal scrollback-row-1 within 30 notches, want it visible; last view:\n%s", m.View())
 	}
 }
 

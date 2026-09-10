@@ -70,9 +70,32 @@ type Model struct {
 	// shrinkOverflow holds rows a height-shrinking SetSize captured
 	// before they would otherwise have been silently destroyed by the
 	// underlying emulator's own resize (see SetSize's doc comment) —
-	// oldest first, rendered as a tier even older than m.emu's own
-	// scrollback (see renderScrolledView, ScrollLines).
+	// oldest first, rendered as a tier BETWEEN m.emu's own scrollback and
+	// the live screen (see renderScrolledView, ScrollLines): the rows it
+	// holds were on the live screen at capture time, so they are newer
+	// than anything already scrolled into the real scrollback by then,
+	// even though the real scrollback usually holds far more lines
+	// overall (everything that scrolled off before the shrink ever
+	// happened).
 	shrinkOverflow []string
+	// shrinkContinuing is true immediately after a shrink-capture and
+	// reset to false the next time real output is written (Update's
+	// OutputMsg case). It exists because a single user resize gesture
+	// (dragging a real terminal window's edge) typically arrives as MANY
+	// separate, small SetSize calls — one per intermediate size the OS
+	// reports — not one big jump. Each of those calls captures a row
+	// that is OLDER than the row the previous call in the same gesture
+	// captured (the grid keeps shrinking from the same unchanged
+	// content), so consecutive captures within one gesture must be
+	// PREPENDED to stay oldest-first overall; capturing after output has
+	// arrived is a genuinely later, newer batch and must be APPENDED
+	// instead. Without this distinction, a smooth multi-step drag comes
+	// out with its captured rows in exactly reversed order — this is
+	// exactly the difference between the tmux `resize-window` calls this
+	// feature was originally verified against (which deliver one resize
+	// per call, not a smooth multi-step sequence) and a real terminal
+	// emulator's own window-drag behavior.
+	shrinkContinuing bool
 }
 
 // New creates a terminal session identified by id — a value the caller
@@ -113,10 +136,10 @@ func (m Model) ID() int {
 // cursor (and therefore the most recently written content — a shell
 // prompt, the tail of whatever was just catted) sits near the BOTTOM of
 // the grid, that's exactly backwards for a shrinking terminal. Capture
-// the rows about to be destroyed ourselves, oldest first, into
-// shrinkOverflow (an older-than-scrollback tier renderScrolledView
-// already knows how to render) before delegating to the library's own
-// resize — confirmed against the real library, not just reasoned about
+// the rows about to be destroyed ourselves into shrinkOverflow (see its
+// own doc comment for the tier position and the prepend/append
+// distinction) before delegating to the library's own resize —
+// confirmed against the real library, not just reasoned about
 // abstractly (see TestSetSizePreservesRowsLostToARealEmulatorsHeightShrink).
 func (m Model) SetSize(width, height int) Model {
 	if width < 0 {
@@ -143,15 +166,22 @@ func (m Model) SetSize(width, height int) Model {
 		// unrelated content blended into what's supposed to be
 		// main-screen scrollback.
 		liveLines := strings.Split(m.emu.Render(), "\n")
-		from := height
-		if from > len(liveLines) {
-			from = len(liveLines)
+		from := max(0, min(height, len(liveLines)))
+		captured := liveLines[from:]
+		if m.shrinkContinuing {
+			// Still the same resize gesture as the previous capture (no
+			// output has arrived since) — this batch is OLDER than that
+			// one (see shrinkContinuing's own doc comment), so it goes
+			// in front, not at the back.
+			m.shrinkOverflow = append(captured, m.shrinkOverflow...)
+		} else {
+			m.shrinkOverflow = append(m.shrinkOverflow, captured...)
 		}
-		if from < 0 {
-			from = 0
-		}
-		m.shrinkOverflow = append(m.shrinkOverflow, liveLines[from:]...)
+		m.shrinkContinuing = true
 		if excess := len(m.shrinkOverflow) - maxShrinkOverflow; excess > 0 {
+			// The oldest entries are always at index 0 regardless of
+			// which branch above just ran, so trimming the front here is
+			// always correct.
 			m.shrinkOverflow = m.shrinkOverflow[excess:]
 		}
 	}
@@ -275,6 +305,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			beforeLen = m.emu.ScrollbackLen()
 		}
 		m.emu.Write(msg.data)
+		// Real output arrived — any later shrink-capture is a genuinely
+		// newer batch than whatever's already in shrinkOverflow, not a
+		// continuation of the same resize gesture (see shrinkContinuing's
+		// own doc comment).
+		m.shrinkContinuing = false
 		switch {
 		case wasAltScreen && !m.emu.IsAltScreen():
 			// The alt screen (vim, less, ...) just exited as part of this
@@ -354,13 +389,16 @@ var scrollbarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 //
 // The vt library's Render() only ever renders the live screen — there is
 // no "render at an offset" parameter — so a paused/scrolled view is built
-// by hand from three chronologically-ordered tiers, oldest first:
-// m.shrinkOverflow (rows a height shrink would otherwise have destroyed —
-// see SetSize), the emulator's own scrollback (ScrollbackLen/
-// ScrollbackLine), then the live screen's own rows. The live screen's
-// individual rows come from splitting Render()'s own output on "\n" —
-// safe because ANSI SGR/CSI escape sequences never contain a raw newline
-// byte.
+// by hand from three chronologically-ordered tiers, oldest first: the
+// emulator's own scrollback (ScrollbackLen/ScrollbackLine — normally far
+// more content than a single shrink ever captures, everything that
+// scrolled off before the shrink happened), then m.shrinkOverflow (rows a
+// height shrink would otherwise have destroyed — see SetSize — which
+// were still on the live screen at capture time, making them newer than
+// whatever was already in scrollback then), then the live screen's own
+// rows. The live screen's individual rows come from splitting Render()'s
+// own output on "\n" — safe because ANSI SGR/CSI escape sequences never
+// contain a raw newline byte.
 func (m Model) renderScrolledView() string {
 	liveLines := strings.Split(m.emu.Render(), "\n")
 	overflowLen := len(m.shrinkOverflow)
@@ -369,11 +407,8 @@ func (m Model) renderScrolledView() string {
 	if height <= 0 || height > len(liveLines) {
 		height = len(liveLines)
 	}
-	total := overflowLen + sbLen + height
-	start := total - height - m.scrollOffset
-	if start < 0 {
-		start = 0
-	}
+	total := sbLen + overflowLen + height
+	start := max(0, total-height-m.scrollOffset)
 	bar := scrollbar.Column(total, height, start)
 	overlayWidth := m.width - 2 // " " + one scrollbar rune, matching editor/filetree's own scrollbarGutterWidth
 	lines := make([]string, height)
@@ -381,12 +416,21 @@ func (m Model) renderScrolledView() string {
 		i := start + row
 		var line string
 		switch {
-		case i < overflowLen:
-			line = m.shrinkOverflow[i]
-		case i-overflowLen < sbLen:
-			line = m.emu.ScrollbackLine(i - overflowLen)
-		case i-overflowLen-sbLen < len(liveLines):
-			line = liveLines[i-overflowLen-sbLen]
+		case i < sbLen:
+			// Real scrollback comes first (oldest): it holds everything
+			// that scrolled off before this shrink ever happened, which
+			// is normally far more content than a single shrink captures.
+			line = m.emu.ScrollbackLine(i)
+		case i-sbLen < overflowLen:
+			// shrinkOverflow sits between scrollback and the live screen
+			// — its rows were still on the live screen at capture time,
+			// so they're newer than anything already in scrollback then
+			// (see shrinkOverflow's own doc comment for the one edge
+			// case this doesn't perfectly handle: real output arriving
+			// AFTER a shrink and being pushed into scrollback afterward).
+			line = m.shrinkOverflow[i-sbLen]
+		case i-sbLen-overflowLen < len(liveLines):
+			line = liveLines[i-sbLen-overflowLen]
 		}
 		var barRune rune
 		if row < len(bar) {

@@ -830,3 +830,129 @@ func TestSetSizeDoesNotCaptureOnAWidthOnlyShrink(t *testing.T) {
 		t.Fatalf("got shrinkOverflow=%q after a width-only shrink, want empty — only a HEIGHT shrink discards rows in the real emulator", m.shrinkOverflow)
 	}
 }
+
+// TestSequentialSmallShrinksProduceTheSameOrderAsOneBigShrink covers a
+// real, user-reported bug found through manual testing in Ghostty (a real
+// terminal emulator): dragging a real window's edge delivers MANY small,
+// separate resize events as the OS reports each intermediate size — not
+// one big jump the way tmux's `resize-window` (used to verify this
+// feature originally) does. Each of those calls captures the row nearest
+// the cursor first, then the next-nearest, and so on — the exact REVERSE
+// of chronological order — so appending each capture to shrinkOverflow's
+// end (rather than prepending while shrinkContinuing) came out backwards
+// after a multi-step shrink even though a single-step shrink of the same
+// total size was correct.
+//
+// Uses the REAL vt.Emulator (only newPty is faked) for both the
+// multi-step and single-jump sides of the comparison — the fake's Write
+// doesn't reproduce the library's actual resize/discard behavior, so
+// comparing against it wouldn't prove anything about the real bug.
+func TestSequentialSmallShrinksProduceTheSameOrderAsOneBigShrink(t *testing.T) {
+	newSession := func(t *testing.T) Model {
+		t.Helper()
+		p := &fakePty{}
+		origPty := newPty
+		newPty = func(width, height int) (Pty, error) { return p, nil }
+		t.Cleanup(func() { newPty = origPty })
+
+		m := New(1).SetSize(20, 8)
+		m, _ = m.Start()
+		t.Cleanup(func() { _ = m.Close() })
+		updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("r0\r\nr1\r\nr2\r\nr3\r\nr4\r\nr5\r\nr6\r\nr7")})
+		return updated
+	}
+
+	oneJump := newSession(t)
+	oneJump = oneJump.SetSize(20, 1)
+
+	stepwise := newSession(t)
+	for h := 7; h >= 1; h-- {
+		stepwise = stepwise.SetSize(20, h)
+	}
+
+	if len(oneJump.shrinkOverflow) != len(stepwise.shrinkOverflow) {
+		t.Fatalf("got %d entries from the stepwise shrink, %d from the one-jump shrink covering the same total range — want equal", len(stepwise.shrinkOverflow), len(oneJump.shrinkOverflow))
+	}
+	for i := range oneJump.shrinkOverflow {
+		if oneJump.shrinkOverflow[i] != stepwise.shrinkOverflow[i] {
+			t.Fatalf("got stepwise shrinkOverflow=%q, want it to match the one-jump shrink's order %q (a real terminal window drag arrives as many small steps, not one jump — both must produce the same oldest-first order)", stepwise.shrinkOverflow, oneJump.shrinkOverflow)
+		}
+	}
+}
+
+// TestShrinkOverflowRendersBetweenRealScrollbackAndLiveNotBeforeScrollback
+// covers a second real bug found alongside the one above: shrinkOverflow
+// was rendered as a tier OLDER than the emulator's own real scrollback,
+// but the rows it holds were on the LIVE screen at capture time — newer
+// than anything already scrolled into real scrollback by then (the
+// common case: heavy output naturally fills real scrollback first, then
+// a shrink captures whatever's left on the live screen at that moment).
+// With the bug, scrolling up from the live view had to pass through the
+// ENTIRE real scrollback before reaching the content a shrink had just
+// captured — for a big scrollback, that made the just-lost content
+// effectively unreachable by any normal "scroll up a bit" gesture,
+// exactly matching the reported symptom ("only the last ~20 lines are
+// cropped").
+func TestShrinkOverflowRendersBetweenRealScrollbackAndLiveNotBeforeScrollback(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	e.written = []byte("mid0\nmid1\nmid2\nmid3\nmid4")
+
+	m = m.SetSize(20, 2) // captures mid2, mid3, mid4 into shrinkOverflow
+
+	// Scrolling up by 1 from the live view (2 visible rows) should reach
+	// straight into shrinkOverflow's newest entry (mid4) — NOT into the
+	// real scrollback's "old*" entries, which are older and must require
+	// scrolling further to reach.
+	nearby := m.ScrollLines(-1)
+	if view := nearby.View(); !strings.Contains(view, "mid4") {
+		t.Fatalf("got View()=%q after scrolling up 1 line, want it to contain mid4 (shrinkOverflow's newest entry, immediately behind the live view — not buried behind the real scrollback)", view)
+	}
+	if view := nearby.View(); strings.Contains(view, "old2") {
+		t.Fatalf("got View()=%q after scrolling up only 1 line, want it to NOT yet reach old2 (the real scrollback's newest entry, which is older than anything shrinkOverflow holds and should require scrolling further)", view)
+	}
+
+	// Scrolling all the way up must eventually reach the real scrollback
+	// too — it isn't discarded, just correctly positioned as older.
+	allTheWayUp := m.ScrollLines(-100)
+	if view := allTheWayUp.View(); !strings.Contains(view, "old0") {
+		t.Fatalf("got View()=%q after scrolling all the way up, want it to contain old0 (the real scrollback's oldest entry, still reachable)", view)
+	}
+}
+
+// TestShrinkContinuingResetsAfterOutputSoALaterShrinkAppends verifies the
+// other half of shrinkContinuing's contract: once real output arrives
+// after a shrink, a LATER shrink is a genuinely newer batch and must be
+// appended to shrinkOverflow's end, not prepended as if it were still
+// part of the same resize gesture.
+func TestShrinkContinuingResetsAfterOutputSoALaterShrinkAppends(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	e.written = []byte("a0\na1\na2\na3\na4")
+	m = m.SetSize(20, 4) // captures "a4"
+
+	// New output arrives — breaks the "same gesture" chain.
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("more")})
+	m = updated
+
+	e.written = []byte("b0\nb1\nb2\nb3")
+	m = m.SetSize(20, 3) // captures "b3" — must append, not prepend
+
+	want := []string{"a4", "b3"}
+	if len(m.shrinkOverflow) != len(want) {
+		t.Fatalf("got shrinkOverflow=%q, want %q (a4 from the first shrink, then b3 appended after output broke the gesture chain)", m.shrinkOverflow, want)
+	}
+	for i, w := range want {
+		if m.shrinkOverflow[i] != w {
+			t.Fatalf("got shrinkOverflow[%d]=%q, want %q — a shrink after new output must append, not prepend", i, m.shrinkOverflow[i], w)
+		}
+	}
+}
