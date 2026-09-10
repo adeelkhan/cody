@@ -138,10 +138,22 @@ func cursorOffset(rows []string, physicalRowCounts []int, cursorRow, cursorCol i
 // offset (from cursorOffset) lands at within newRows (the output of
 // rewrapLogicalLine for the SAME logical line the offset was computed
 // against).
+//
+// The row-boundary comparison is strict (offset < w, not <=): an offset
+// exactly equal to a row's width is the START of the NEXT row (column
+// 0), not one-past-the-end of the current one — a cursor legitimately
+// produces this exact offset whenever it sits at column 0 of a
+// continuation row (cursorOffset sums the full width of every prior
+// physical row before adding its own column). Using <= placed such a
+// cursor one row too high; falling through to decrement offset by w and
+// continue naturally lands it at (nextRow, 0) instead. The fallback
+// after the loop is unchanged: offset landing exactly at the end of the
+// LAST row (no next row to fall through to) still returns
+// (last, width) — the correct "end of content" position.
 func cursorAfterRewrap(newRows []string, offset int) (row, col int) {
 	for i, r := range newRows {
 		w := ansi.StringWidth(r)
-		if offset <= w {
+		if offset < w {
 			return i, offset
 		}
 		offset -= w

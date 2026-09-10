@@ -306,9 +306,21 @@ func (m Model) SetSize(width, height int) Model {
 // relative to whatever shrinkOverflow already holds.
 func (m Model) writeReflowedRows(newRows []string, newCursorRow, newCursorCol, newHeight int) Model {
 	if excess := len(newRows) - newHeight; excess > 0 {
+		beforeOverflowLen := len(m.shrinkOverflow)
 		m.shrinkOverflow = append(m.shrinkOverflow, newRows[:excess]...)
 		if over := len(m.shrinkOverflow) - maxShrinkOverflow; over > 0 {
 			m.shrinkOverflow = m.shrinkOverflow[over:]
+		}
+		// Pin a paused viewport the same way Update's OutputMsg case
+		// already does when real output grows the combined buffer
+		// underneath it: the combined buffer (scrollback + shrinkOverflow
+		// + live) just grew by however much of this batch actually stuck
+		// (after the maxShrinkOverflow trim above may have dropped some
+		// of it from the front), so scrollOffset must grow by the same
+		// amount, or renderScrolledView's paused viewport silently drifts
+		// toward the live tail even though the user never asked it to.
+		if m.scrollOffset > 0 {
+			m.scrollOffset += len(m.shrinkOverflow) - beforeOverflowLen
 		}
 		newRows = newRows[excess:]
 		newCursorRow -= excess

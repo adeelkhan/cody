@@ -90,7 +90,7 @@ Expected: PASS
 - [ ] **Step 5: Full package check and commit**
 
 ```bash
-go build ./... && go vet ./... && gofmt -l internal/terminal go.mod go.sum
+go build ./... && go vet ./... && test -z "$(gofmt -l internal/terminal)"
 go test ./internal/terminal/... -count=1
 git add internal/terminal/reflow.go internal/terminal/reflow_test.go go.mod go.sum
 git commit -m "feat: add wrap-detection primitive for terminal width reflow"

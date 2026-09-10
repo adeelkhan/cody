@@ -254,6 +254,20 @@ func TestCursorAfterRewrapLandsOnTheCorrectRowAndColumn(t *testing.T) {
 	}
 }
 
+// TestCursorAfterRewrapAtARowBoundaryLandsOnTheNextRowNotPastThePrevious
+// covers an off-by-one at exactly a row boundary: an offset equal to a
+// row's own width is the START of the NEXT row (column 0) — a cursor
+// legitimately sitting at column 0 of a continuation row produces
+// exactly this offset (cursorOffset sums the full width of every prior
+// physical row before adding its own column, which is 0 here) — not
+// one-past-the-end of the row before it.
+func TestCursorAfterRewrapAtARowBoundaryLandsOnTheNextRowNotPastThePrevious(t *testing.T) {
+	row, col := cursorAfterRewrap([]string{"ABC", "DEF"}, 3)
+	if row != 1 || col != 0 {
+		t.Fatalf("got (row=%d, col=%d), want (1, 0) — offset 3 is exactly the first row's width, so it's column 0 of the second row, not column 3 of the first", row, col)
+	}
+}
+
 func TestReflowRowsNarrowsAndMapsCursorEndToEnd(t *testing.T) {
 	// One logical line, "1234567890abcde" (15 columns), wrapped across
 	// two physical rows at old width 10.

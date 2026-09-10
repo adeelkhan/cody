@@ -1298,6 +1298,50 @@ func TestSetSizeReflowRespondsToOutputArrivingMidResize(t *testing.T) {
 // interaction from the design spec's §5: a width-only reflow that needs
 // MORE rows than fit in the unchanged height pushes the excess (oldest,
 // from the top) into shrinkOverflow rather than discarding it.
+// TestSetSizeReflowDoesNotReflowContentAlreadyInShrinkOverflow pins a
+// documented, accepted limitation (design spec §8): once reflow
+// overflow lands in shrinkOverflow at whatever width it was pushed
+// there, a LATER, separate width-changing resize only reflows the
+// current live grid — it never revisits content already sitting in
+// shrinkOverflow. This means shrinkOverflow can end up holding rows
+// wrapped at different historical widths after multiple resizes, with
+// no attempt to reconcile them. Not a bug to fix here — shrinkOverflow
+// is exactly as historical/frozen as real scrollback already is, and
+// re-wrapping it on every subsequent resize would mean re-wrapping
+// potentially thousands of historical rows each time, the same cost
+// already declined for real scrollback.
+func TestSetSizeReflowDoesNotReflowContentAlreadyInShrinkOverflow(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 2)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	const line = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte(line)})
+	m = updated
+
+	m = m.SetSize(10, 2) // first width-only shrink: pushes 2 rows into shrinkOverflow, wrapped at width 10
+	if len(m.shrinkOverflow) == 0 {
+		t.Fatal("test setup: expected the first shrink to produce reflow overflow")
+	}
+	frozenAtWidth10 := append([]string(nil), m.shrinkOverflow...)
+
+	m = m.SetSize(5, 2) // second, separate width-only shrink
+
+	if len(m.shrinkOverflow) < len(frozenAtWidth10) {
+		t.Fatalf("got %d shrinkOverflow entries after the second shrink, want at least the %d already there to remain untouched", len(m.shrinkOverflow), len(frozenAtWidth10))
+	}
+	for i, want := range frozenAtWidth10 {
+		if m.shrinkOverflow[i] != want {
+			t.Fatalf("got shrinkOverflow[%d]=%q after a second, separate width-only resize, want it unchanged at %q — content already in shrinkOverflow is never re-reflowed by a later resize (see design spec §8)", i, m.shrinkOverflow[i], want)
+		}
+	}
+}
+
 func TestSetSizeReflowOverflowAppendsIntoShrinkOverflow(t *testing.T) {
 	p := &fakePty{}
 	origPty := newPty
@@ -1324,6 +1368,52 @@ func TestSetSizeReflowOverflowAppendsIntoShrinkOverflow(t *testing.T) {
 	allUp := m.ScrollLines(-10)
 	if !strings.Contains(allUp.View(), "ABCDEFGH") {
 		t.Fatalf("got View()=%q after scrolling up through shrinkOverflow, want the earliest reflowed row present", allUp.View())
+	}
+}
+
+// TestSetSizeReflowOverflowPinsAPausedViewport covers a viewport-drift
+// bug: when a width-only resize's reflow overflow grows shrinkOverflow
+// while the user is paused (scrollOffset > 0), the combined buffer
+// (scrollback + shrinkOverflow + live) that renderScrolledView measures
+// against just got longer — without also growing scrollOffset by the
+// same amount, the paused viewport silently shifts toward the live
+// tail, exactly the class of bug Update's OutputMsg case already guards
+// against for real output arriving while paused (see its own
+// beforeLen/afterLen comment) — this is the same guard, for the same
+// reason, on the reflow-overflow path.
+func TestSetSizeReflowOverflowPinsAPausedViewport(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 2) // only 2 rows tall
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	// L0 scrolls into real scrollback (1 line); the live grid ends up
+	// showing L1 and the long line — the long line fits one row at
+	// width 40 but needs 4 rows once rewrapped at width 10, more than
+	// the height (2) can hold, so shrinking width overflows it.
+	const longLine = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("L0\r\nL1\r\n" + longLine)})
+	m = updated
+
+	m = m.ScrollLines(-1) // pause, into the real scrollback
+	if m.scrollOffset == 0 {
+		t.Fatal("test setup: expected scrollOffset > 0 after scrolling up")
+	}
+	pausedOffset := m.scrollOffset
+	overflowBefore := len(m.shrinkOverflow)
+
+	m = m.SetSize(10, 2) // width-only shrink while paused
+
+	overflowAdded := len(m.shrinkOverflow) - overflowBefore
+	if overflowAdded == 0 {
+		t.Fatal("test setup: expected the width shrink to actually produce reflow overflow")
+	}
+	if want := pausedOffset + overflowAdded; m.scrollOffset != want {
+		t.Fatalf("got scrollOffset=%d after reflow overflow while paused, want %d (paused offset %d + %d newly-overflowed rows) — otherwise the paused viewport drifts toward the live tail", m.scrollOffset, want, pausedOffset, overflowAdded)
 	}
 }
 

@@ -198,4 +198,8 @@ send the matching escape sequence.
   ends on a blank cell (common in prose, where the wrap point often
   lands just after a space) measures narrower than the full width and is
   never rejoined on a later widen. Both are known limitations of working
-  from rendered rows rather than raw terminal cells.
+  from rendered rows rather than raw terminal cells. Content that scrolls
+  off the pane's visible area (from a height shrink or from reflow
+  running out of room) is also never re-wrapped again by a later resize
+  — it stays wrapped at whatever width it was at when it scrolled off,
+  same as real terminal scrollback.

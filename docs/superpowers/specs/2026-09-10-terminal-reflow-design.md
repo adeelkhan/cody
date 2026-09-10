@@ -282,6 +282,25 @@ gaps discovered later:
   back down to fill freed space; this spec leaves freed rows blank
   instead (their content remains reachable by scrolling up, same as
   today). Revisit if this proves visually confusing in practice.
+- **Re-reflowing `shrinkOverflow`'s own content on a later resize.**
+  §5's overflow rows are written into `shrinkOverflow` once, at
+  whatever width they were pushed there, and never touched again — a
+  second, separate width-changing `SetSize` call only reflows
+  `m.emu.Render()` (the current live grid), not anything already
+  sitting in `shrinkOverflow`. Across a sequence of several
+  width-changing resizes that each produce overflow, this means
+  `shrinkOverflow` can hold rows wrapped at different historical
+  widths side by side, with no seam marking where one width's rows end
+  and another's begin. This is the direct extension of the first two
+  bullets' reasoning to a case they didn't originally call out by name:
+  `shrinkOverflow` is, from the moment content lands in it, exactly as
+  historical and frozen as real scrollback already is — reflowing it
+  in place on every subsequent resize would mean re-wrapping
+  potentially thousands of historical rows on every resize event, the
+  same cost this spec already declined to pay for real scrollback.
+  Content is never lost or duplicated by this — only its *wrap width*
+  is inconsistent across the historical/live boundary after multiple
+  resizes. Not fixed here; pinned as accepted behavior.
 - **Fixing either direction of the wrap-detection heuristic's
   misjudgment** (§3.2). The heuristic — "the row above is a wrapped
   continuation iff its *rendered* width fills the pane" — can be wrong
