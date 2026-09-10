@@ -4,6 +4,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"cody/internal/editor"
+	"cody/internal/terminal"
 )
 
 type Command struct {
@@ -16,6 +17,7 @@ func buildCommands() []Command {
 	return []Command{
 		{Name: "New", Handler: cmdNewFilePrompt},
 		{Name: "New Tab", Shortcut: "ctrl+n", Handler: cmdNewBlankTab},
+		{Name: "New Terminal Tab", Shortcut: "ctrl+t", Handler: cmdNewTerminalTab},
 		{Name: "Open", Shortcut: "ctrl+o", Handler: cmdOpenFilePrompt},
 		{Name: "Find", Shortcut: "ctrl+f", Handler: cmdFind},
 		{Name: "Save", Shortcut: "ctrl+s", Handler: cmdSave},
@@ -55,6 +57,20 @@ func cmdNewBlankTab(m Model) (Model, tea.Cmd) {
 	p.activeTab = len(p.tabs) - 1
 	m.focus = focusEditor
 	m.recentCommand = "New file"
+	return m, nil
+}
+
+// cmdNewTerminalTab appends a new, not-yet-started terminal tab, activates
+// and focuses it, but deliberately does not start its shell itself —
+// starting is maybeStartActiveTerminal's job, triggered by a subsequent
+// focus change (tab/shift+tab, a pane click) the same way it is for any
+// other newly-focused terminal tab.
+func cmdNewTerminalTab(m Model) (Model, tea.Cmd) {
+	m.nextTerminalID++
+	m.terminals = append(m.terminals, terminalTab{term: terminal.New(m.nextTerminalID)})
+	m.activeTerminal = len(m.terminals) - 1
+	m.focus = focusTerminal
+	m.recentCommand = "New terminal"
 	return m, nil
 }
 
@@ -108,7 +124,9 @@ func cmdQuit(m Model) (Model, tea.Cmd) {
 		}
 	}
 	if !hasDirty {
-		m.terminal.Close()
+		for _, t := range m.terminals {
+			t.term.Close()
+		}
 		return m, tea.Quit
 	}
 	m.activeDialog = dialogConfirmDiscard

@@ -81,19 +81,40 @@ type editorPane struct {
 	activeTab int // -1 when this pane has no tabs open
 }
 
+// terminalTab is one terminal session: its own independent terminal.Model
+// (own pty, own vt.Emulator, own generation counter). Unlike an editor
+// tab, it carries no path/dirty state — a shell session has no "unsaved
+// changes" concept.
+type terminalTab struct {
+	term terminal.Model
+}
+
 type Model struct {
-	tree          filetree.Model
-	panes         []editorPane // len 1 (unsplit) or 2 (split); never 0
-	activePane    int          // which pane index keyboard/mouse edits target
-	terminal      terminal.Model
-	focus         focusArea
-	projectName   string
-	recentCommand string
-	width, height int
-	commands      []Command
-	rootPath      string
-	openMenu      string
-	tabMenu       *tabContextMenu // nil when no tab-menu is open
+	tree       filetree.Model
+	panes      []editorPane // len 1 (unsplit) or 2 (split); never 0
+	activePane int          // which pane index keyboard/mouse edits target
+	// terminals/activeTerminal mirror panes/activePane's own invariants:
+	// len(terminals) is never 0 — the terminal pane itself is not
+	// closable, so closing the sole remaining tab resets it in place
+	// rather than emptying the slice (see removeTerminalTab). activeTerminal
+	// indexes the tab currently shown/receiving keyboard input when
+	// focus == focusTerminal.
+	terminals      []terminalTab
+	activeTerminal int
+	// nextTerminalID is a monotonic counter handed to terminal.New as each
+	// new session's stable id (see that package's New doc comment) —
+	// never reused, so a message from a since-closed session can never be
+	// misrouted to whatever new session happens to occupy its old slice
+	// index.
+	nextTerminalID int
+	focus          focusArea
+	projectName    string
+	recentCommand  string
+	width, height  int
+	commands       []Command
+	rootPath       string
+	openMenu       string
+	tabMenu        *tabContextMenu // nil when no tab-menu is open
 
 	// treeWidth and terminalHeight are the tree and terminal panes' current
 	// on-screen sizes (border included) — mutable, unlike their
@@ -138,7 +159,7 @@ func New(rootPath string, nerdFont bool) (Model, error) {
 		tree:           tree,
 		panes:          []editorPane{{activeTab: -1}},
 		activePane:     0,
-		terminal:       terminal.New(),
+		terminals:      []terminalTab{{term: terminal.New(0)}},
 		focus:          focusTree,
 		projectName:    filepath.Base(absPath),
 		rootPath:       absPath,
@@ -365,7 +386,7 @@ func (m Model) resizeAllPanes() Model {
 		}
 	}
 	termW := max(0, m.width-m.treeWidth-borderSize)
-	m.terminal = m.terminal.SetSize(termW, max(0, m.terminalHeight-borderSize))
+	m.terminals[m.activeTerminal].term = m.terminals[m.activeTerminal].term.SetSize(termW, max(0, m.terminalHeight-borderSize))
 	return m
 }
 
@@ -402,15 +423,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.setActiveEditor(e)
 		return m, cmd
 	}
-	if _, ok := msg.(terminal.OutputMsg); ok {
-		var cmd tea.Cmd
-		m.terminal, cmd = m.terminal.Update(msg)
-		return m, cmd
+	if out, ok := msg.(terminal.OutputMsg); ok {
+		for i := range m.terminals {
+			if m.terminals[i].term.ID() == out.ID() {
+				var cmd tea.Cmd
+				m.terminals[i].term, cmd = m.terminals[i].term.Update(msg)
+				return m, cmd
+			}
+		}
+		// No tab matches: it was already closed (removeTerminalTab calls
+		// Close(), which stops the read loop — but a read already in
+		// flight when that happened still completes and produces one more
+		// message). Nothing to route it to; drop it.
+		return m, nil
 	}
-	if _, ok := msg.(terminal.ReadErrMsg); ok {
-		var cmd tea.Cmd
-		m.terminal, cmd = m.terminal.Update(msg)
-		return m, cmd
+	if errMsg, ok := msg.(terminal.ReadErrMsg); ok {
+		for i := range m.terminals {
+			if m.terminals[i].term.ID() == errMsg.ID() {
+				var cmd tea.Cmd
+				m.terminals[i].term, cmd = m.terminals[i].term.Update(msg)
+				return m, cmd
+			}
+		}
+		return m, nil
 	}
 	if m.activeDialog != dialogNone {
 		// A left click anywhere while a modal dialog is open dismisses it,
@@ -473,10 +508,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "tab":
 			m.focusNext()
-			return m.maybeStartTerminal()
+			return m.maybeStartActiveTerminal()
 		case "shift+tab":
 			m.focusPrev()
-			return m.maybeStartTerminal()
+			return m.maybeStartActiveTerminal()
 		case "esc":
 			if m.tabMenu != nil {
 				m.tabMenu = nil
@@ -491,7 +526,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cmd, ok := commandForShortcut(m.commands, msg.String()); ok {
 					return cmd.Handler(m)
 				}
-			} else if msg.String() == "ctrl+o" || msg.String() == "ctrl+q" || msg.String() == "ctrl+n" {
+			} else if msg.String() == "ctrl+o" || msg.String() == "ctrl+q" || msg.String() == "ctrl+n" || msg.String() == "ctrl+t" {
 				if cmd, ok := commandForShortcut(m.commands, msg.String()); ok {
 					return cmd.Handler(m)
 				}
@@ -525,7 +560,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.setActiveEditor(e)
 		cmd = c
 	case focusTerminal:
-		m.terminal, cmd = m.terminal.Update(msg)
+		m.terminals[m.activeTerminal].term, cmd = m.terminals[m.activeTerminal].term.Update(msg)
 	}
 	return m, cmd
 }
@@ -736,7 +771,7 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 	}
 	if terminalRect.contains(x, y) {
 		m.focus = focusTerminal
-		return m.maybeStartTerminal()
+		return m.maybeStartActiveTerminal()
 	}
 	return m, nil
 }
@@ -956,14 +991,17 @@ func (m *Model) focusPrev() {
 	}
 }
 
-// maybeStartTerminal lazily spawns the shell the first time the terminal
-// pane gains focus. A no-op on every subsequent focus change.
-func (m Model) maybeStartTerminal() (Model, tea.Cmd) {
+// maybeStartActiveTerminal lazily spawns the active terminal tab's shell
+// the first time it gets focus, if it isn't already started. Safe to call
+// unconditionally — a no-op when focus isn't on the terminal pane, or when
+// the active tab is already running (terminal.Model.Start's own no-op
+// guard).
+func (m Model) maybeStartActiveTerminal() (Model, tea.Cmd) {
 	if m.focus != focusTerminal {
 		return m, nil
 	}
 	var cmd tea.Cmd
-	m.terminal, cmd = m.terminal.Start()
+	m.terminals[m.activeTerminal].term, cmd = m.terminals[m.activeTerminal].term.Start()
 	return m, cmd
 }
 
@@ -1093,7 +1131,7 @@ func (m Model) View() string {
 	tree := m.tree.SetSize(max(0, m.treeWidth-borderSize), max(0, bodyHeight-borderSize)).SetDirty(dirty)
 	termWidth := m.width - m.treeWidth - borderSize
 	termHeight := m.terminalHeight - borderSize
-	term := m.terminal.SetSize(max(0, termWidth), max(0, termHeight))
+	term := m.terminals[m.activeTerminal].term.SetSize(max(0, termWidth), max(0, termHeight))
 
 	var paneColumns []string
 	for i, p := range m.panes {
