@@ -33,3 +33,40 @@ func groupIntoLogicalLines(rows []string, width int) (lines []string, physicalRo
 	}
 	return lines, physicalRowCounts
 }
+
+// rewrapLogicalLine re-wraps a logical line's content at newWidth,
+// returning its new physical rows. Built on ansi.Truncate/TruncateLeft
+// (already an indirect dependency via lipgloss, which lipgloss.Width
+// itself is built on) rather than a hand-rolled grapheme-walking loop:
+// Truncate is already ANSI-aware and wide-character-safe, confirmed by
+// reading its implementation to drop a grapheme cluster entirely — never
+// split it — if including it would push the accumulated width past the
+// limit. Advancing by ansi.StringWidth(row) (not newWidth) after each
+// row is what makes the non-split rule automatic: in the one case where
+// Truncate dropped a trailing wide cluster, row's width is
+// newWidth-1, so the next TruncateLeft naturally leaves that cluster as
+// the first thing in the next row instead of skipping or duplicating it.
+func rewrapLogicalLine(line string, newWidth int) []string {
+	if line == "" {
+		return []string{""}
+	}
+	var rows []string
+	remaining := line
+	for remaining != "" {
+		row := ansi.Truncate(remaining, newWidth, "")
+		if row == "" {
+			// Degenerate case: not even one cluster fits at this width
+			// (e.g. newWidth==1 with a double-width character next).
+			// Dump the remainder as a single overflowing row rather
+			// than looping forever — an extreme edge case, not the
+			// target scenario, so "doesn't hang" is the bar, not
+			// "doesn't overflow visually."
+			rows = append(rows, remaining)
+			break
+		}
+		rows = append(rows, row)
+		consumed := ansi.StringWidth(row)
+		remaining = ansi.TruncateLeft(remaining, consumed, "")
+	}
+	return rows
+}
