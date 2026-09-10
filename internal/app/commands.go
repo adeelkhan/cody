@@ -50,8 +50,9 @@ func cmdSave(m Model) (Model, tea.Cmd) {
 func cmdNewBlankTab(m Model) (Model, tea.Cmd) {
 	editorW, editorH := m.newTabEditorSize()
 	e := editor.New().NewBlankBuffer().SetSize(editorW, editorH)
-	m.tabs = append(m.tabs, tab{path: "", editor: e})
-	m.activeTab = len(m.tabs) - 1
+	p := &m.panes[m.activePane]
+	p.tabs = append(p.tabs, tab{path: "", editor: e})
+	p.activeTab = len(p.tabs) - 1
 	m.focus = focusEditor
 	m.recentCommand = "New file"
 	return m, nil
@@ -95,9 +96,14 @@ func cmdToggleFold(m Model) (Model, tea.Cmd) {
 
 func cmdQuit(m Model) (Model, tea.Cmd) {
 	hasDirty := false
-	for _, t := range m.tabs {
-		if t.editor.HasUnsavedChanges() {
-			hasDirty = true
+	for _, p := range m.panes {
+		for _, t := range p.tabs {
+			if t.editor.HasUnsavedChanges() {
+				hasDirty = true
+				break
+			}
+		}
+		if hasDirty {
 			break
 		}
 	}

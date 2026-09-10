@@ -216,7 +216,7 @@ func TestMouseClickCancelsConfirmDialogWithoutConfirming(t *testing.T) {
 			t.Fatal("expected a click to cancel (same as Esc), not confirm — it must never quit the app")
 		}
 	}
-	if len(m.tabs) != 1 || !m.tabs[0].editor.HasUnsavedChanges() {
+	if len(m.panes[0].tabs) != 1 || !m.panes[0].tabs[0].editor.HasUnsavedChanges() {
 		t.Fatal("expected the dirty tab to remain open and dirty after the click cancels the dialog")
 	}
 }

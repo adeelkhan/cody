@@ -20,11 +20,11 @@ func TestCtrlNOpensBlankUntitledTab(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
 	m = updated.(Model)
 
-	if len(m.tabs) != 1 {
-		t.Fatalf("got %d tabs, want 1", len(m.tabs))
+	if len(m.panes[0].tabs) != 1 {
+		t.Fatalf("got %d tabs, want 1", len(m.panes[0].tabs))
 	}
-	if m.tabs[0].path != "" {
-		t.Fatalf("got path=%q, want empty (untitled)", m.tabs[0].path)
+	if m.panes[0].tabs[0].path != "" {
+		t.Fatalf("got path=%q, want empty (untitled)", m.panes[0].tabs[0].path)
 	}
 	if m.focus != focusEditor {
 		t.Fatal("expected focus to move to the editor")
@@ -80,8 +80,8 @@ func TestConfirmingSaveAsWritesFileRenamesTabAndClearsDirty(t *testing.T) {
 	if m.activeDialog != dialogNone {
 		t.Fatal("expected the dialog to close after a successful Save As")
 	}
-	if m.tabs[0].path != target {
-		t.Fatalf("got tab path=%q, want %q", m.tabs[0].path, target)
+	if m.panes[0].tabs[0].path != target {
+		t.Fatalf("got tab path=%q, want %q", m.panes[0].tabs[0].path, target)
 	}
 	if m.activeEditor().HasUnsavedChanges() {
 		t.Fatal("expected Save As to clear dirty status")
@@ -144,7 +144,7 @@ func TestCancelingPathPromptChangesNothing(t *testing.T) {
 	if m.activeDialog != dialogNone {
 		t.Fatal("expected Esc to close the dialog")
 	}
-	if len(m.tabs) != 1 || m.tabs[0].path != "" {
+	if len(m.panes[0].tabs) != 1 || m.panes[0].tabs[0].path != "" {
 		t.Fatal("expected the untitled tab to be unchanged after canceling")
 	}
 }
@@ -177,8 +177,8 @@ func TestFileMenuNewCreatesAndOpensAFile(t *testing.T) {
 	if m.activeDialog != dialogNone {
 		t.Fatal("expected the dialog to close after a successful create")
 	}
-	if len(m.tabs) != 1 || m.tabs[0].path != filepath.Join(dir, "fresh.go") {
-		t.Fatalf("got tabs=%v, want one tab for fresh.go", m.tabs)
+	if len(m.panes[0].tabs) != 1 || m.panes[0].tabs[0].path != filepath.Join(dir, "fresh.go") {
+		t.Fatalf("got tabs=%v, want one tab for fresh.go", m.panes[0].tabs)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "fresh.go")); err != nil {
 		t.Fatal("expected fresh.go to exist on disk")
