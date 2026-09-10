@@ -212,12 +212,23 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		// one Write caused; scrollOffset (lines back from the bottom)
 		// grows by the same amount to compensate. A no-op while following
 		// (scrollOffset == 0 stays 0 — nothing to pin).
+		wasAltScreen := m.emu.IsAltScreen()
 		var beforeLen int
 		if m.scrollOffset > 0 {
 			beforeLen = m.emu.ScrollbackLen()
 		}
 		m.emu.Write(msg.data)
-		if m.scrollOffset > 0 {
+		switch {
+		case wasAltScreen && !m.emu.IsAltScreen():
+			// The alt screen (vim, less, ...) just exited as part of this
+			// very Write. Any scrollOffset left over refers to
+			// main-screen content from before it started — meaningless
+			// now that we're back to the live prompt it just returned
+			// to, and View's own alt-screen guard no longer masks it
+			// (IsAltScreen() is false again) — reset before it can blend
+			// stale scrollback into that prompt.
+			m.scrollOffset = 0
+		case m.scrollOffset > 0:
 			m.scrollOffset += m.emu.ScrollbackLen() - beforeLen
 		}
 		return m, readCmd(m.pty, m.id, m.generation)
@@ -315,7 +326,22 @@ func (m Model) renderScrolledView() string {
 		case i-sbLen < len(liveLines):
 			line = liveLines[i-sbLen]
 		}
-		if overlayWidth > 0 {
+		var barRune rune
+		if row < len(bar) {
+			barRune = bar[row]
+		}
+		// A degenerately narrow pane (the same aggressively-downsized-
+		// window class this codebase already floors elsewhere) must
+		// never render a row wider than m.width itself claims: no room
+		// for content or a gutter at 0, room for only the scrollbar cell
+		// itself at 1 (no leading space), and the normal content+gutter
+		// shape from 2 up.
+		switch {
+		case m.width <= 0:
+			lines[row] = ""
+		case m.width == 1:
+			lines[row] = scrollbarStyle.Render(string(barRune))
+		default:
 			// MaxWidth truncates a line longer than overlayWidth, but
 			// (unlike editor/filetree's own padRow, which this mirrors)
 			// never pads a shorter one — without padding, the scrollbar
@@ -326,12 +352,8 @@ func (m Model) renderScrolledView() string {
 			if pad := overlayWidth - lipgloss.Width(line); pad > 0 {
 				line += strings.Repeat(" ", pad)
 			}
+			lines[row] = line + " " + scrollbarStyle.Render(string(barRune))
 		}
-		var barRune rune
-		if row < len(bar) {
-			barRune = bar[row]
-		}
-		lines[row] = line + " " + scrollbarStyle.Render(string(barRune))
 	}
 	return strings.Join(lines, "\n")
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type fakePty struct {
@@ -71,6 +72,13 @@ type fakeEmulator struct {
 	// before/after ScrollbackLen() measurement.
 	pushOnWrite []string
 	altScreen   bool
+	// altScreenAfterWrite, if non-nil, sets altScreen to this value the
+	// next time Write is called (then clears itself) — simulates a real
+	// Write transitioning in/out of the alternate screen as a side
+	// effect of the bytes it contains (e.g. vim's own alt-screen
+	// enter/exit escape sequences arriving in that chunk), independent
+	// of whatever IsAltScreen() reported before that particular Write.
+	altScreenAfterWrite *bool
 }
 
 func (f *fakeEmulator) Write(p []byte) (int, error) {
@@ -78,6 +86,10 @@ func (f *fakeEmulator) Write(p []byte) (int, error) {
 	if len(f.pushOnWrite) > 0 {
 		f.sbLines = append(f.sbLines, f.pushOnWrite...)
 		f.pushOnWrite = nil
+	}
+	if f.altScreenAfterWrite != nil {
+		f.altScreen = *f.altScreenAfterWrite
+		f.altScreenAfterWrite = nil
 	}
 	return len(p), nil
 }
@@ -582,6 +594,87 @@ func TestRenderScrolledViewPadsShortLinesSoTheScrollbarStaysAtAFixedColumn(t *te
 		col := strings.IndexAny(line, "│█")
 		if col != col0 {
 			t.Fatalf("got scrollbar column=%d on row %d (%q), want %d (same as row 0) — the scrollbar must stay at a fixed column regardless of each row's own content length", col, i, line, col0)
+		}
+	}
+}
+
+// TestScrollOffsetResetsWhenAltScreenExitsDuringAnOutputMsg covers a real
+// gap in the earlier alt-screen fix, caught by CodeRabbit's review of PR
+// #8: View() correctly falls back to the plain live render WHILE the alt
+// screen is active, but scrollOffset itself was never reset — so once an
+// alt-screen app (vim, less, ...) exits, IsAltScreen() goes back to false
+// and View() would immediately re-enter renderScrolledView() with the
+// STALE pre-app scrollOffset, blending old main-screen scrollback into
+// the just-returned live prompt for a frame (until the next scroll or
+// keypress happened to reset it).
+func TestScrollOffsetResetsWhenAltScreenExitsDuringAnOutputMsg(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+	m = m.ScrollLines(-1) // paused, viewing scrollback, on the main screen
+	if m.scrollOffset == 0 {
+		t.Fatal("test setup: expected scrollOffset > 0 after scrolling up")
+	}
+
+	// Simulate: an alt-screen app started at some point after that (the
+	// already-covered transition), and is now exiting within this single
+	// OutputMsg — IsAltScreen() reports true going in, false coming out.
+	e.altScreen = true
+	exiting := false
+	e.altScreenAfterWrite = &exiting
+	e.written = []byte("prompt-returned")
+
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("more")})
+	m = updated
+
+	if m.scrollOffset != 0 {
+		t.Fatalf("got scrollOffset=%d after an alt-screen app exited mid-OutputMsg, want 0 (a stale offset from before the app started must not blend into the just-returned live prompt)", m.scrollOffset)
+	}
+}
+
+// TestRenderScrolledViewAtZeroWidthRendersNoGutter and
+// TestRenderScrolledViewAtWidthOneShowsOnlyTheScrollbarCell cover another
+// CodeRabbit finding on PR #8: at m.width == 0, renderScrolledView's own
+// `if overlayWidth > 0` guard correctly skipped the (now-negative-width)
+// content truncation, but still unconditionally appended the 2-cell
+// " "+bar gutter afterward — so a degenerately narrow pane (the same
+// aggressively-downsized-window class this codebase already floors
+// elsewhere) rendered rows wider than its own claimed width instead of
+// nothing at all.
+
+func TestRenderScrolledViewAtZeroWidthRendersNoGutter(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"a", "b", "c"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(0, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+	m = m.ScrollLines(-1)
+
+	for i, line := range strings.Split(m.View(), "\n") {
+		if got := lipgloss.Width(line); got != 0 {
+			t.Fatalf("got row %d width=%d at pane width 0, want 0 (no content, no gutter): %q", i, got, line)
+		}
+	}
+}
+
+func TestRenderScrolledViewAtWidthOneShowsOnlyTheScrollbarCell(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"a", "b", "c"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(1, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+	m = m.ScrollLines(-1)
+
+	for i, line := range strings.Split(m.View(), "\n") {
+		if got := lipgloss.Width(line); got != 1 {
+			t.Fatalf("got row %d width=%d at pane width 1, want 1 (scrollbar cell only, no content, no leading space): %q", i, got, line)
 		}
 	}
 }
