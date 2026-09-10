@@ -316,7 +316,16 @@ func (m Model) renderScrolledView() string {
 			line = liveLines[i-sbLen]
 		}
 		if overlayWidth > 0 {
+			// MaxWidth truncates a line longer than overlayWidth, but
+			// (unlike editor/filetree's own padRow, which this mirrors)
+			// never pads a shorter one — without padding, the scrollbar
+			// appended right after would land at a different column on
+			// every row, drifting with each row's own content length
+			// instead of staying fixed at the pane's right edge.
 			line = lipgloss.NewStyle().MaxWidth(overlayWidth).Render(line)
+			if pad := overlayWidth - lipgloss.Width(line); pad > 0 {
+				line += strings.Repeat(" ", pad)
+			}
 		}
 		var barRune rune
 		if row < len(bar) {

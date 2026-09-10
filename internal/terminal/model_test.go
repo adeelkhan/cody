@@ -552,3 +552,36 @@ func TestViewIgnoresStaleScrollOffsetWhenAltScreenBecomesActive(t *testing.T) {
 		t.Fatalf("got View()=%q while alt screen is active with a stale scrollOffset, want %q — the live alt-screen content, not blended with stale main-screen scrollback", view, want)
 	}
 }
+
+// TestRenderScrolledViewPadsShortLinesSoTheScrollbarStaysAtAFixedColumn
+// covers a legitimate finding from PR #8's Greptile bot review:
+// lipgloss.NewStyle().MaxWidth() only truncates lines longer than the
+// target width, it never pads shorter ones — so a scrollbar appended
+// directly after each (unpadded) line landed at a different column on
+// every row, drifting left/right depending on each row's own content
+// length, instead of staying fixed at the pane's right edge.
+func TestRenderScrolledViewPadsShortLinesSoTheScrollbarStaysAtAFixedColumn(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"a", "bb", "ccc"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+	m = m.ScrollLines(-1)
+
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3", len(lines))
+	}
+	col0 := strings.IndexAny(lines[0], "│█")
+	if col0 < 0 {
+		t.Fatalf("test setup: row 0 has no scrollbar character at all: %q", lines[0])
+	}
+	for i, line := range lines {
+		col := strings.IndexAny(line, "│█")
+		if col != col0 {
+			t.Fatalf("got scrollbar column=%d on row %d (%q), want %d (same as row 0) — the scrollbar must stay at a fixed column regardless of each row's own content length", col, i, line, col0)
+		}
+	}
+}
