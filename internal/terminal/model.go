@@ -79,8 +79,12 @@ type Model struct {
 	// happened).
 	shrinkOverflow []string
 	// shrinkContinuing is true immediately after a shrink-capture and
-	// reset to false the next time real output is written (Update's
-	// OutputMsg case). It exists because a single user resize gesture
+	// reset to false the next time the live grid's content is genuinely
+	// perturbed since that capture — either real output being written
+	// (Update's OutputMsg case) or the height growing back (SetSize),
+	// which pads the grid with new, empty rows and so is just as
+	// invalidating as output for this purpose. It exists because a
+	// single user resize gesture
 	// (dragging a real terminal window's edge) typically arrives as MANY
 	// separate, small SetSize calls — one per intermediate size the OS
 	// reports — not one big jump. Each of those calls captures a row
@@ -184,6 +188,20 @@ func (m Model) SetSize(width, height int) Model {
 			// always correct.
 			m.shrinkOverflow = m.shrinkOverflow[excess:]
 		}
+	} else if changed && height > m.height {
+		// A height GROWTH also breaks the "same shrink gesture" chain,
+		// same as real output does (see shrinkContinuing's own doc
+		// comment) — the library pads the grid with new, empty rows to
+		// reach the larger height, so the live grid is no longer the
+		// same snapshot a later shrink-capture would need to treat as a
+		// continuation. Without this, a shrink/grow/shrink bounce within
+		// one drag (a realistic pattern — real window-drag resize events
+		// aren't always monotonic) could prepend a captured row of blank
+		// padding as if it were OLDER than genuinely older content
+		// already sitting in shrinkOverflow. A width-only change does
+		// NOT reset this — it doesn't touch the grid vertically, so it
+		// can't invalidate a shrink chain the same way.
+		m.shrinkContinuing = false
 	}
 	m.width, m.height = width, height
 	if changed {

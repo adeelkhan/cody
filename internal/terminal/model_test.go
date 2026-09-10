@@ -956,3 +956,48 @@ func TestShrinkContinuingResetsAfterOutputSoALaterShrinkAppends(t *testing.T) {
 		}
 	}
 }
+
+// TestShrinkContinuingResetsOnGrowSoABounceDoesNotMisorderShrinkOverflow
+// covers a gap in the fix above, caught by an independent review: growing
+// the height back also breaks the "same shrink gesture" chain, same as
+// real output does — the library pads the grown grid with new, empty
+// rows, so a later shrink's capture is no longer part of the same
+// snapshot the earlier captures were. Without resetting shrinkContinuing
+// on growth too, a realistic "shrink, overshoot-correct with a grow,
+// shrink again" bounce within one resize-drag (real OS-driven drags
+// aren't always perfectly monotonic) would PREPEND that later capture —
+// placing a fresh blank padding row as if it were OLDER than genuinely
+// older content already captured, corrupting the order.
+//
+// Uses the REAL vt.Emulator (only newPty is faked): the fake's Resize
+// doesn't pad the grid with new rows on growth the way the real library
+// does, so it can't reproduce the scenario this test guards against.
+func TestShrinkContinuingResetsOnGrowSoABounceDoesNotMisorderShrinkOverflow(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(20, 10)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("r0\r\nr1\r\nr2\r\nr3\r\nr4\r\nr5\r\nr6\r\nr7\r\nr8\r\nr9")})
+	m = updated
+
+	m = m.SetSize(20, 9) // captures r9
+	m = m.SetSize(20, 8) // captures r8, prepends (still continuing) -> [r8, r9]
+	if got := m.shrinkOverflow; len(got) != 2 || got[0] != "r8" || got[1] != "r9" {
+		t.Fatalf("test setup: got shrinkOverflow=%q, want [r8 r9]", got)
+	}
+
+	m = m.SetSize(20, 10) // grow back, no output — must reset shrinkContinuing
+
+	m = m.SetSize(20, 9) // captures whatever the grow padded in as the new bottom row — must APPEND, not prepend
+
+	if len(m.shrinkOverflow) != 3 {
+		t.Fatalf("got %d entries after the grow-then-shrink bounce, want 3", len(m.shrinkOverflow))
+	}
+	if m.shrinkOverflow[0] != "r8" || m.shrinkOverflow[1] != "r9" {
+		t.Fatalf("got shrinkOverflow=%q, want r8 and r9 to remain the first two entries — the post-grow capture must not have been prepended ahead of them", m.shrinkOverflow)
+	}
+}
