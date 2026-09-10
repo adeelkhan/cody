@@ -70,7 +70,8 @@ func cmdNewBlankTab(m Model) (Model, tea.Cmd) {
 // until something else happened to trigger a start.
 func cmdNewTerminalTab(m Model) (Model, tea.Cmd) {
 	m.nextTerminalID++
-	m.terminals = append(m.terminals, terminalTab{term: terminal.New(m.nextTerminalID)})
+	w, h := m.newTerminalSize()
+	m.terminals = append(m.terminals, terminalTab{term: terminal.New(m.nextTerminalID).SetSize(w, h)})
 	m.activeTerminal = len(m.terminals) - 1
 	m.focus = focusTerminal
 	m.recentCommand = "New terminal"

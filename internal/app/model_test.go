@@ -1136,6 +1136,25 @@ func setupSizedApp(t *testing.T) Model {
 	return updated.(Model)
 }
 
+// readCmdOrTimeout runs cmd (a tea.Cmd whose blocking work is a real pty
+// Read — there's no fake seam for it across the internal/terminal package
+// boundary) in a goroutine and returns its result, or fails the test if it
+// doesn't return within d. Guards tests that drive a real pty's blocking
+// Read against hanging forever (rather than failing promptly) if the
+// behavior they're checking for ever regresses.
+func readCmdOrTimeout(t *testing.T, cmd tea.Cmd, d time.Duration) tea.Msg {
+	t.Helper()
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		return msg
+	case <-time.After(d):
+		t.Fatalf("cmd did not return within %s", d)
+		return nil
+	}
+}
+
 func press(x, y int) tea.MouseMsg {
 	return tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
 }
@@ -2224,6 +2243,11 @@ func TestCmdNewTerminalTabAppendsActivatesAndStartsIt(t *testing.T) {
 	m.focus = focusTree // deliberately not focusTerminal yet
 
 	m, _ = cmdNewTerminalTab(m)
+	t.Cleanup(func() {
+		for i := range m.terminals {
+			m.terminals[i].term.Close()
+		}
+	})
 
 	if len(m.terminals) != 2 {
 		t.Fatalf("got %d terminal tabs, want 2", len(m.terminals))
@@ -2242,6 +2266,68 @@ func TestCmdNewTerminalTabAppendsActivatesAndStartsIt(t *testing.T) {
 	}
 }
 
+// TestCmdNewTerminalTabSizesTheNewSessionBeforeStarting guards against the
+// gap where a newly appended terminal tab was left at zero width/height:
+// terminal.Model's own Start() falls back to a hardcoded 80x24 whenever its
+// stored size is <= 0 (see that package's doc comment), so an unsized new
+// tab would still start — just at the wrong size — silently masking the
+// bug. Sizing it correctly via newTerminalSize() first means Start() uses
+// the real pane geometry instead of that fallback. There's no width/height
+// getter on terminal.Model to assert against directly, so this observes it
+// through Render(): the real vt.Emulator renders exactly `height` lines
+// (confirmed empirically — see the task's own note on this), so a session
+// started at the 80x24 fallback instead of its real ~5-line pane would
+// render 24 lines here, not 5.
+func TestCmdNewTerminalTabSizesTheNewSessionBeforeStarting(t *testing.T) {
+	m := setupSizedApp(t)
+	wantW, wantH := m.newTerminalSize()
+	if wantW <= 0 || wantH <= 0 {
+		t.Fatalf("test setup: newTerminalSize returned non-positive (%d,%d) for an 80x24 window", wantW, wantH)
+	}
+	if wantH == 24 {
+		t.Fatal("test setup: wantH coincides with terminal.Model's own 80x24 fallback height — this test can't distinguish the two at this window size")
+	}
+
+	m, _ = cmdNewTerminalTab(m)
+	t.Cleanup(func() {
+		for i := range m.terminals {
+			m.terminals[i].term.Close()
+		}
+	})
+
+	lines := strings.Split(m.terminals[m.activeTerminal].term.View(), "\n")
+	if len(lines) != wantH {
+		t.Fatalf("got %d rendered lines from the new tab's started shell, want %d (newTerminalSize's height) — suggests the session started at terminal.Model's 80x24 fallback instead of being sized first", len(lines), wantH)
+	}
+}
+
+// TestRemoveTerminalTabSoleRemainingResetSizesTheReplacementSession mirrors
+// the above for removeTerminalTab's sole-remaining-tab reset path (see
+// confirm.go), which has the identical unsized-construction gap. The
+// replacement session isn't started by removeTerminalTab itself (it stays
+// freshly unstarted, per TestRemoveTerminalTabOnTheSoleRemainingTabResetsInPlaceInsteadOfEmptying),
+// so this starts it manually afterward and checks the same rendered-line-
+// count signal.
+func TestRemoveTerminalTabSoleRemainingResetSizesTheReplacementSession(t *testing.T) {
+	m := setupSizedApp(t)
+	wantW, wantH := m.newTerminalSize()
+	if wantW <= 0 || wantH <= 0 {
+		t.Fatalf("test setup: newTerminalSize returned non-positive (%d,%d) for an 80x24 window", wantW, wantH)
+	}
+	if wantH == 24 {
+		t.Fatal("test setup: wantH coincides with terminal.Model's own 80x24 fallback height — this test can't distinguish the two at this window size")
+	}
+
+	m = m.removeTerminalTab(0)
+	m.terminals[0].term, _ = m.terminals[0].term.Start()
+	t.Cleanup(func() { m.terminals[0].term.Close() })
+
+	lines := strings.Split(m.terminals[0].term.View(), "\n")
+	if len(lines) != wantH {
+		t.Fatalf("got %d rendered lines from the replacement session's started shell, want %d (newTerminalSize's height) — suggests it was never sized before being started", len(lines), wantH)
+	}
+}
+
 func TestCtrlTCreatesANewTerminalTabEvenWhileTheTerminalPaneAlreadyHasFocus(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, false)
@@ -2252,6 +2338,11 @@ func TestCtrlTCreatesANewTerminalTabEvenWhileTheTerminalPaneAlreadyHasFocus(t *t
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 	m = updated.(Model)
+	t.Cleanup(func() {
+		for i := range m.terminals {
+			m.terminals[i].term.Close()
+		}
+	})
 
 	if len(m.terminals) != 2 {
 		t.Fatalf("got %d terminal tabs after ctrl+t while terminal-focused, want 2", len(m.terminals))
@@ -2271,6 +2362,12 @@ func TestRemoveTerminalTabReassignsActiveTerminalLikeRemoveTabDoesForEditorTabs(
 		t.Fatalf("test setup: got %d tabs, activeTerminal=%d, want 3 tabs, activeTerminal=2", len(m.terminals), m.activeTerminal)
 	}
 
+	t.Cleanup(func() {
+		for i := range m.terminals {
+			m.terminals[i].term.Close()
+		}
+	})
+
 	// Closing a tab before the active one shifts activeTerminal left.
 	m = m.removeTerminalTab(0)
 	if len(m.terminals) != 2 || m.activeTerminal != 1 {
@@ -2281,6 +2378,73 @@ func TestRemoveTerminalTabReassignsActiveTerminalLikeRemoveTabDoesForEditorTabs(
 	m = m.removeTerminalTab(1)
 	if len(m.terminals) != 1 || m.activeTerminal != 0 {
 		t.Fatalf("got %d tabs, activeTerminal=%d after closing the last active tab, want 1 tab, activeTerminal=0", len(m.terminals), m.activeTerminal)
+	}
+}
+
+// TestRemoveTerminalTabAfterTheActiveOneLeavesActiveTerminalUnchanged covers
+// the index > activeTerminal case missing from
+// TestRemoveTerminalTabReassignsActiveTerminalLikeRemoveTabDoesForEditorTabs:
+// closing a tab that comes AFTER the active one shouldn't move it.
+func TestRemoveTerminalTabAfterTheActiveOneLeavesActiveTerminalUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = cmdNewTerminalTab(m)
+	m, _ = cmdNewTerminalTab(m)
+	t.Cleanup(func() {
+		for i := range m.terminals {
+			m.terminals[i].term.Close()
+		}
+	})
+	if len(m.terminals) != 3 {
+		t.Fatalf("test setup: got %d tabs, want 3", len(m.terminals))
+	}
+	// Simulate the user having switched back to tab 1 (the middle tab).
+	m.activeTerminal = 1
+
+	m = m.removeTerminalTab(2) // index 2 > activeTerminal 1
+
+	if len(m.terminals) != 2 || m.activeTerminal != 1 {
+		t.Fatalf("got %d tabs, activeTerminal=%d after closing a tab after the active one, want 2 tabs, activeTerminal=1 (unchanged)", len(m.terminals), m.activeTerminal)
+	}
+}
+
+// TestRemoveTerminalTabAtActiveIndexWithALaterTabPresentKeepsActiveAtTheSameIndex
+// covers the index == activeTerminal, tabs-remain-after-it case missing
+// from TestRemoveTerminalTabReassignsActiveTerminalLikeRemoveTabDoesForEditorTabs
+// — mirrors removeTab's own already-tested
+// TestCloseTabReassignsActiveTabWhenLaterTabExists for editor tabs: closing
+// the active tab with a later tab present shifts that later tab left into
+// the closed slot, so activeTerminal stays at the same numeric index but
+// now points at the tab that shifted into it.
+func TestRemoveTerminalTabAtActiveIndexWithALaterTabPresentKeepsActiveAtTheSameIndex(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = cmdNewTerminalTab(m)
+	m, _ = cmdNewTerminalTab(m)
+	t.Cleanup(func() {
+		for i := range m.terminals {
+			m.terminals[i].term.Close()
+		}
+	})
+	if len(m.terminals) != 3 {
+		t.Fatalf("test setup: got %d tabs, want 3", len(m.terminals))
+	}
+	survivorID := m.terminals[2].term.ID()
+	m.activeTerminal = 1
+
+	m = m.removeTerminalTab(1) // index == activeTerminal, tab 2 remains after it
+
+	if len(m.terminals) != 2 || m.activeTerminal != 1 {
+		t.Fatalf("got %d tabs, activeTerminal=%d after closing the active tab with a later tab present, want 2 tabs, activeTerminal=1", len(m.terminals), m.activeTerminal)
+	}
+	if m.terminals[m.activeTerminal].term.ID() != survivorID {
+		t.Fatal("expected activeTerminal to now point at the tab that shifted into the closed slot, not some other tab")
 	}
 }
 
@@ -2325,20 +2489,40 @@ func TestBackgroundTerminalTabOutputMsgIsRoutedToItsOwnEmulatorNotTheActiveOne(t
 	if cmd == nil {
 		t.Fatal("test setup: starting tab 0 returned a nil cmd")
 	}
-	msg := cmd()
-	out, ok := msg.(terminal.OutputMsg)
-	if !ok {
-		t.Fatalf("test setup: got %T, want terminal.OutputMsg", msg)
-	}
 
 	t.Cleanup(func() { m.terminals[0].term.Close() })
 	t.Cleanup(func() { m.terminals[1].term.Close() })
 
-	updated, _ := m.Update(out)
-	m = updated.(Model)
+	// Captured before applying any of tab 0's OutputMsgs, synchronously in
+	// this same goroutine with no intervening call that could change
+	// tab 1 — a bug that routed the write into both tabs' emulators would
+	// change this.
+	tab1ViewBefore := m.terminals[1].term.View()
 
-	if m.terminals[0].term.View() == "Terminal not started" {
-		t.Fatal("expected tab 0's OutputMsg to have been applied to tab 0, not silently dropped")
+	// A freshly spawned shell's first few pty reads are often invisible
+	// escape/title sequences (e.g. zsh's own no-newline indicator, which
+	// draws then immediately clears itself within one chunk) before its
+	// prompt actually appears — so pump tab 0's output through Update
+	// until its own rendered view shows real visible content, rather than
+	// asserting on just the first chunk. Bounded so a stalled pty fails
+	// this test outright instead of hanging it.
+	const maxReads = 10
+	for i := 0; i < maxReads && cmd != nil && strings.TrimSpace(m.terminals[0].term.View()) == ""; i++ {
+		msg := readCmdOrTimeout(t, cmd, 5*time.Second)
+		out, ok := msg.(terminal.OutputMsg)
+		if !ok {
+			t.Fatalf("got %T from tab 0's pty, want terminal.OutputMsg", msg)
+		}
+		var updated tea.Model
+		updated, cmd = m.Update(out)
+		m = updated.(Model)
+	}
+
+	if strings.TrimSpace(m.terminals[0].term.View()) == "" {
+		t.Fatal("expected tab 0's OutputMsg(s) to have produced visible content, not silently dropped")
+	}
+	if m.terminals[1].term.View() != tab1ViewBefore {
+		t.Fatal("expected tab 1 (not the tab the OutputMsg belongs to) to be left untouched by routing tab 0's OutputMsg")
 	}
 }
 
@@ -2348,20 +2532,40 @@ func TestQuitClosesEveryTerminalTabNotJustTheActiveOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, _ = cmdNewTerminalTab(m)
+	// cmdNewTerminalTab starts tab 1 (the new tab) automatically since it
+	// also focuses it — capture its read cmd from that call directly,
+	// since calling Start() on an already-started session is a documented
+	// no-op that returns a nil cmd.
+	var cmd1 tea.Cmd
+	m, cmd1 = cmdNewTerminalTab(m)
 
-	m.terminals[0].term, _ = m.terminals[0].term.Start()
-	m.terminals[1].term, _ = m.terminals[1].term.Start()
+	var cmd0 tea.Cmd
+	m.terminals[0].term, cmd0 = m.terminals[0].term.Start()
+	if cmd0 == nil || cmd1 == nil {
+		t.Fatal("test setup: Start() returned a nil read cmd")
+	}
 
 	m, _ = cmdQuit(m)
 
-	// terminal.Model.Close() closes the underlying pty; the fake-free path
-	// here uses a real pty (Start() with no fakes installed spawns $SHELL),
-	// so assert indirectly: closing twice must still be safe (Close is a
-	// documented no-op on an already-closed/unstarted session) and the
-	// dialog-free quit path must reach tea.Quit for both tabs regardless.
 	if m.activeDialog != dialogNone {
 		t.Fatal("expected a clean quit (no dirty editor tabs) to not open a dialog")
+	}
+
+	// Prove the underlying ptys were actually closed (not just that the
+	// dialog-free path reached tea.Quit) by invoking each tab's own read
+	// cmd, captured from Start() BEFORE cmdQuit ran. A closed pty's Read
+	// returns an error immediately, which readCmd turns into a
+	// terminal.ReadErrMsg; a still-open pty's Read would instead block
+	// (there's no output from an idle shell), so readCmdOrTimeout bounds
+	// each call rather than risking a hang if cmdQuit's close loop is ever
+	// deleted or broken.
+	msg0 := readCmdOrTimeout(t, cmd0, 2*time.Second)
+	if _, ok := msg0.(terminal.ReadErrMsg); !ok {
+		t.Fatalf("tab 0: got %T from its captured read cmd after cmdQuit, want terminal.ReadErrMsg", msg0)
+	}
+	msg1 := readCmdOrTimeout(t, cmd1, 2*time.Second)
+	if _, ok := msg1.(terminal.ReadErrMsg); !ok {
+		t.Fatalf("tab 1: got %T from its captured read cmd after cmdQuit, want terminal.ReadErrMsg", msg1)
 	}
 }
 
@@ -2446,6 +2650,48 @@ func TestClickingATerminalTabsCloseGlyphRemovesItWithoutSwitchingFocus(t *testin
 	}
 }
 
+// TestClosingTheActiveTerminalTabStartsWhicheverTabBecomesActiveIfUnstarted
+// guards against a gap where closing the active terminal tab could leave
+// focus on a terminal pane whose now-active tab was never started:
+// keystrokes would then be silently swallowed by
+// terminal.Model.handleKey's nil-pty guard until some unrelated
+// focus-change event happened to trigger a start.
+func TestClosingTheActiveTerminalTabStartsWhicheverTabBecomesActiveIfUnstarted(t *testing.T) {
+	m := setupSizedApp(t)
+	// cmdNewTerminalTab focuses+starts the new tab; tab 0 (the original)
+	// is never focused here, so it stays unstarted.
+	m, _ = cmdNewTerminalTab(m) // 2 tabs: [0 unstarted, 1 started+active], focus=focusTerminal
+	t.Cleanup(func() {
+		for i := range m.terminals {
+			m.terminals[i].term.Close()
+		}
+	})
+	if m.terminals[0].term.Started() {
+		t.Fatal("test setup: expected tab 0 to still be unstarted before the close")
+	}
+	if m.focus != focusTerminal {
+		t.Fatal("test setup: expected cmdNewTerminalTab to leave the terminal pane focused")
+	}
+
+	_, _, term := m.paneLayout()
+	regions := terminalTabRegions(m.terminals, term.tabBar.x1-term.tabBar.x0)
+	closeX := term.tabBar.x0 + regions[1].closeStart // close the active tab (1)
+	closeY := term.tabBar.y0
+
+	updated, _ := m.Update(tea.MouseMsg{X: closeX, Y: closeY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if len(m.terminals) != 1 {
+		t.Fatalf("got %d terminal tabs after closing tab 1, want 1", len(m.terminals))
+	}
+	if m.activeTerminal != 0 {
+		t.Fatalf("got activeTerminal=%d, want 0 (the only tab left)", m.activeTerminal)
+	}
+	if !m.terminals[m.activeTerminal].term.Started() {
+		t.Fatal("expected the tab that became active after the close to be started, since the terminal pane was already focused")
+	}
+}
+
 func TestResizeAllPanesReachesEveryTerminalTabWithoutDisturbingItsRunningState(t *testing.T) {
 	// terminal.Model exposes no getter for its stored width/height, and
 	// internal/app cannot reach into internal/terminal's unexported
@@ -2484,7 +2730,18 @@ func TestResizeAllPanesReachesEveryTerminalTabWithoutDisturbingItsRunningState(t
 	})
 }
 
-func TestBeginResizeDragOnTheTerminalBoundaryStillWorksWithTheNewTabBarSubLayout(t *testing.T) {
+// TestBeginResizeDragNoLongerTreatsTheTerminalTabBarsOwnRowAsABoundary
+// replaces the old TestBeginResizeDragOnTheTerminalBoundaryStillWorksWithTheNewTabBarSubLayout
+// (which asserted the opposite). Update's own mouse-press dispatch already
+// intercepts any click landing anywhere in the terminal tab bar's full rect
+// — the same x-range this checks — and routes it to handleClick before
+// beginResizeDrag is ever tried (see the doc comment on that dispatch), so
+// beginResizeDrag itself can no longer observe a call at the tab bar's own
+// row through the real input path; the row it still recognizes as the
+// editor/terminal boundary is exclusively the editor's own bottom border
+// (already covered end-to-end by TestDraggingEditorTerminalBoundaryResizesTerminalHeight
+// and TestDraggingEditorTerminalBoundaryClampsToMinAndMaxHeight).
+func TestBeginResizeDragNoLongerTreatsTheTerminalTabBarsOwnRowAsABoundary(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, false)
 	if err != nil {
@@ -2494,8 +2751,7 @@ func TestBeginResizeDragOnTheTerminalBoundaryStillWorksWithTheNewTabBarSubLayout
 	m = updated.(Model)
 
 	_, _, term := m.paneLayout()
-	m, ok := m.beginResizeDrag(m.treeWidth, term.tabBar.y0)
-	if !ok || m.resizeDrag != resizeTerminal {
-		t.Fatalf("got ok=%v resizeDrag=%v, want ok=true resizeDrag=resizeTerminal at the terminal tab bar's own top row", ok, m.resizeDrag)
+	if _, ok := m.beginResizeDrag(m.treeWidth, term.tabBar.y0); ok {
+		t.Fatal("expected beginResizeDrag to no longer treat the terminal tab bar's own row as a resize boundary — that row is exclusively tab-bar-click territory now, reached only through Update's own priority check before beginResizeDrag is ever tried")
 	}
 }

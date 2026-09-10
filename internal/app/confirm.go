@@ -115,7 +115,8 @@ func (m Model) removeTerminalTab(index int) Model {
 	m.terminals[index].term.Close()
 	if len(m.terminals) == 1 {
 		m.nextTerminalID++
-		m.terminals[0] = terminalTab{term: terminal.New(m.nextTerminalID)}
+		w, h := m.newTerminalSize()
+		m.terminals[0] = terminalTab{term: terminal.New(m.nextTerminalID).SetSize(w, h)}
 		m.activeTerminal = 0
 		return m
 	}

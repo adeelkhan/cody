@@ -255,6 +255,24 @@ func (m Model) newTabEditorSize() (width, height int) {
 	return max(0, w-borderSize), max(0, editorHeight-borderSize)
 }
 
+// newTerminalSize computes the width/height a new (or reset) terminal tab's
+// session should be sized at immediately on construction, mirroring
+// newTabEditorSize's own shape but for the terminal pane — it reuses the
+// exact same termW/termH formula resizeAllPanes already applies to every
+// existing terminal tab, so the two can never drift out of sync with each
+// other. Without this, a newly appended tab left at its zero default size
+// would still start (terminal.Model's own Start() falls back to a
+// hardcoded 80x24 whenever width/height are <= 0), just at the wrong size —
+// and since the *stored* size would stay 0, View()'s per-frame SetSize call
+// would see that stale 0 as "changed" on every single render, forever
+// re-issuing pty.Resize/emu.Resize for that tab.
+//
+// Floored at 0 for the same degenerate-window reason newTabEditorSize is:
+// see that method's own doc comment.
+func (m Model) newTerminalSize() (width, height int) {
+	return max(0, m.width-m.treeWidth-borderSize), max(0, m.terminalHeight-borderSize-tabBarHeight)
+}
+
 // openOrSwitch opens path in a new tab, or switches to its existing tab if
 // one is already open for that path in ANY pane — never creates a
 // duplicate, and never leaves the same file open as two independently-
@@ -496,16 +514,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseActionPress:
 			switch msg.Button {
 			case tea.MouseButtonLeft:
-				// The terminal's own tab bar row sits, by design, on the
-				// same row beginResizeDrag checks for the editor/terminal
-				// boundary (grabbing that row anywhere past the tab strip
-				// still resizes — see
-				// TestBeginResizeDragOnTheTerminalBoundaryStillWorksWithTheNewTabBarSubLayout),
-				// but unlike the editor's own bottom border row (a purely
-				// visual line with nothing to click), the terminal's strip
-				// is real, always-at-least-one-tab content. A click that
-				// actually lands on it must reach tab selection/close, not
-				// be swallowed as a resize-drag start — so check it first.
+				// The terminal's own tab bar occupies its own row, entirely
+				// separate from the editor's bottom border row that
+				// beginResizeDrag checks for the editor/terminal boundary.
+				// Any click landing anywhere in that tab-bar row — any
+				// column from treeWidth to width, whether on an actual tab
+				// or past the last one — is routed to handleClick here,
+				// which dispatches tab selection/close (or no-ops, past the
+				// last tab); it is checked first so a click on that real,
+				// always-at-least-one-tab content reaches tab
+				// selection/close instead of ever being tried against
+				// beginResizeDrag. The only row that still starts a
+				// terminal-height resize-drag is the editor's own bottom
+				// border (editorRect.y1-1 in beginResizeDrag) — see
+				// TestDraggingEditorTerminalBoundaryResizesTerminalHeight and
+				// TestBeginResizeDragNoLongerTreatsTheTerminalTabBarsOwnRowAsABoundary.
 				if _, _, term := m.paneLayout(); term.tabBar.contains(msg.X, msg.Y) {
 					return m.handleClick(msg.X, msg.Y)
 				}
@@ -810,8 +833,14 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 			// matches handlePaneClick's own precedent for the editor tab
 			// bar's close glyph just above: a close action on a tab
 			// shouldn't also redirect focus/active-selection as a side
-			// effect.
-			return m.removeTerminalTab(region.tabIndex), nil
+			// effect. It DOES start whichever tab ends up active afterward,
+			// though: maybeStartActiveTerminal no-ops unless
+			// m.focus == focusTerminal, so this can't redirect focus either
+			// — it only matters when the terminal pane was already
+			// focused, in which case the tab that ends up active there
+			// must actually be running, not silently swallowing keystrokes
+			// until some unrelated focus-change event happens to start it.
+			return m.removeTerminalTab(region.tabIndex).maybeStartActiveTerminal()
 		}
 		m.activeTerminal = region.tabIndex
 		m.focus = focusTerminal
@@ -906,7 +935,7 @@ func (m Model) beginResizeDrag(x, y int) (Model, bool) {
 	if m.activeDialog != dialogNone || m.openMenu != "" || m.tabMenu != nil {
 		return m, false
 	}
-	treeRect, panes, term := m.paneLayout()
+	treeRect, panes, _ := m.paneLayout()
 	if x == treeRect.x1-1 && y >= treeRect.y0 && y < treeRect.y1 {
 		m.resizeDrag = resizeTree
 		return m, true
@@ -919,7 +948,7 @@ func (m Model) beginResizeDrag(x, y int) (Model, bool) {
 		}
 	}
 	editorRect := panes[0].editor
-	onHorizontalBoundary := y == editorRect.y1-1 || y == term.tabBar.y0
+	onHorizontalBoundary := y == editorRect.y1-1
 	if onHorizontalBoundary && x >= treeRect.x1 && x < m.width {
 		m.resizeDrag = resizeTerminal
 		return m, true
