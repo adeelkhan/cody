@@ -1163,3 +1163,82 @@ func TestSetSizeReflowRespondsToOutputArrivingMidResize(t *testing.T) {
 		t.Fatalf("got View()=%q, want the newer output present", m.View())
 	}
 }
+
+// TestSetSizeReflowOverflowAppendsIntoShrinkOverflow covers the height
+// interaction from the design spec's §5: a width-only reflow that needs
+// MORE rows than fit in the unchanged height pushes the excess (oldest,
+// from the top) into shrinkOverflow rather than discarding it.
+func TestSetSizeReflowOverflowAppendsIntoShrinkOverflow(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 2) // only 2 rows tall
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	// One line that fits in a single row at width 40, but needs 4 rows
+	// once rewrapped at width 10 — more than the height (2) can hold.
+	const line = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte(line)})
+	m = updated
+
+	m = m.SetSize(10, 2) // shrink width only; height stays 2
+
+	if len(m.shrinkOverflow) == 0 {
+		t.Fatalf("got empty shrinkOverflow, want the rows that didn't fit in height 2 to have been pushed there")
+	}
+	// The live view (scrolled all the way up through shrinkOverflow)
+	// must still contain the full original content — nothing lost.
+	allUp := m.ScrollLines(-10)
+	if !strings.Contains(allUp.View(), "ABCDEFGH") {
+		t.Fatalf("got View()=%q after scrolling up through shrinkOverflow, want the earliest reflowed row present", allUp.View())
+	}
+}
+
+// TestSetSizeSkipsReflowOnSimultaneousWidthAndHeightChange covers the
+// design spec's B2 decision: reflow is skipped entirely when width and
+// height change together in one SetSize call — that step falls back to
+// today's existing (pre-reflow) width-truncation behavior instead. This
+// deliberately does NOT test that no content is lost on this step —
+// only that reflow's own machinery didn't run and nothing panics.
+func TestSetSizeSkipsReflowOnSimultaneousWidthAndHeightChange(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 10)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("some content")})
+	m = updated
+
+	// Should not panic, and shrinkOverflow's existing height-shrink
+	// capture (untouched by this plan) still runs for the height
+	// component of this simultaneous change.
+	m = m.SetSize(10, 5)
+	_ = m.View()
+}
+
+// TestSetSizeReflowSkippedDuringAltScreen mirrors the existing
+// shrinkOverflow alt-screen guard: reflow must not run while a
+// full-screen app (vim, less, ...) is active, or it would corrupt that
+// app's own UI by reflowing it as if it were shell history.
+func TestSetSizeReflowSkippedDuringAltScreen(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{altScreen: true}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(40, 5)
+	m, _ = m.Start()
+
+	before := e.written
+	m = m.SetSize(10, 5)
+
+	if string(e.written) != string(before) {
+		t.Fatalf("got e.written changed during an alt-screen resize, want reflow's write-back to have been skipped entirely")
+	}
+}

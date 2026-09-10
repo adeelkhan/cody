@@ -67,17 +67,17 @@ type Model struct {
 	// there is no cursor here for it to track — scrolling the terminal
 	// never moves anything the shell itself is doing, only the viewport.
 	scrollOffset int
-	// shrinkOverflow holds rows a height-shrinking SetSize captured
-	// before they would otherwise have been silently destroyed by the
-	// underlying emulator's own resize (see SetSize's doc comment), and
-	// also any rows a width-changing reflow computed but couldn't fit
-	// back into the unchanged height (see writeReflowedRows) — oldest
-	// first, rendered as a tier BETWEEN m.emu's own scrollback and
-	// the live screen (see renderScrolledView, ScrollLines): the rows it
-	// holds were on the live screen at capture time, so they are newer
-	// than anything already scrolled into the real scrollback by then,
-	// even though the real scrollback usually holds far more lines
-	// overall (everything that scrolled off before the shrink ever
+	// shrinkOverflow holds rows evicted by a resize that the underlying
+	// emulator's own resize would otherwise have silently destroyed —
+	// either a height-shrinking SetSize (see SetSize's own doc comment)
+	// or a width-only reflow that needs more rows than fit in the
+	// current height (see writeReflowedRows) — oldest first, rendered
+	// as a tier BETWEEN m.emu's own scrollback and the live screen (see
+	// renderScrolledView, ScrollLines): the rows it holds were on the
+	// live screen at capture time, so they are newer than anything
+	// already scrolled into the real scrollback by then, even though
+	// the real scrollback usually holds far more lines overall
+	// (everything that scrolled off before the shrink/reflow ever
 	// happened).
 	shrinkOverflow []string
 	// shrinkContinuing is true immediately after a shrink-capture and
