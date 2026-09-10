@@ -62,8 +62,11 @@ make test                         # runs the test suite (go test ./...)
 Click and drag the tree pane's right border to resize it, the boundary
 between the editor and terminal to resize the terminal, or (once the editor
 is split) the boundary between the two editor panes to resize them relative
-to each other. Every pane has a minimum size, and the pane on the other side
-of a drag always keeps enough room to stay usable.
+to each other. Every pane has a minimum size; when the window is large
+enough to fit every open pane's minimum at once, the pane on the other side
+of a drag always keeps enough room to stay usable (an aggressively
+downsized window can still leave a pane below its own minimum — resize the
+window back up to recover).
 
 Any open dialog (Open, Find, palette, About, unsaved-changes confirmation,
 New/Rename) can be dismissed with a left click anywhere, same as `Esc`.
@@ -128,8 +131,11 @@ back to a single pane.
 The terminal pane supports multiple independent tabs, each its own shell
 session (own pty, own scrollback) — click a tab to switch to it, click its
 `×` to close it. The terminal pane itself can't be closed: closing the last
-remaining tab resets it to a fresh, unstarted session rather than closing
-the pane. `Ctrl+T` opens a new tab and starts its shell immediately.
+remaining tab replaces it with a fresh session rather than closing the pane.
+If the terminal pane already has focus at that point, the replacement
+starts immediately, the same as `Ctrl+T`; otherwise it starts lazily, the
+next time you focus it. `Ctrl+T` opens a new tab and starts its shell
+immediately.
 
 While the terminal pane has focus, keystrokes go directly to the shell.
 `Ctrl+S`/`Ctrl+X`/`Ctrl+C`/`Ctrl+V`/`Ctrl+Z`/`Ctrl+Y`/`Ctrl+K`/`Ctrl+F` pass
