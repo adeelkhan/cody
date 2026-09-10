@@ -186,11 +186,11 @@ send the matching escape sequence.
 - Scrollback holds up to 10,000 lines per tab; generating output far past that
   cap while scrolled up can very slightly drift the paused view, since the
   oldest lines get evicted out from under it (extremely unlikely in practice).
-- Narrowing the pane permanently truncates already-printed lines past the new
-  width — the underlying terminal library has no text-reflow support, so
-  there's nothing to restore the trimmed characters from once it's widened
-  back out. A best-effort rescue restores a row if nothing has written to it
-  since the shrink, but an interactive shell's own prompt commonly redraws
-  (and can even scroll) in response to the very resize that shrank the pane,
-  which defeats the rescue for whatever it touches. Full text reflow would
-  fix this properly; tracked as future work.
+- Reflow re-wraps already-printed content on every width change, so
+  narrowing and widening the pane no longer loses characters in the
+  common case. It relies on a heuristic (a row that fills the pane's
+  full width is assumed to be a soft-wrapped continuation of the next
+  one) rather than the underlying library tracking wrapping explicitly,
+  so content that happens to fill the full width without actually being
+  wrapped — a box-drawing border the same width as the pane, for
+  example — can be incorrectly joined with the row after it.
