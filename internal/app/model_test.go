@@ -1219,7 +1219,7 @@ func TestDraggingEditorTerminalBoundaryResizesTerminalHeight(t *testing.T) {
 	if m.terminalHeight != defaultTerminalHeight {
 		t.Fatalf("got terminalHeight=%d, want default %d", m.terminalHeight, defaultTerminalHeight)
 	}
-	_, panes, term := m.paneLayout()
+	_, panes, _ := m.paneLayout()
 	boundaryY := panes[0].editor.y1 - 1 // editor's own bottom border row
 
 	updated, _ := m.Update(press(40, boundaryY))
@@ -1228,12 +1228,17 @@ func TestDraggingEditorTerminalBoundaryResizesTerminalHeight(t *testing.T) {
 		t.Fatalf("got resizeDrag=%v, want resizeTerminal", m.resizeDrag)
 	}
 
-	// Drag up: terminal grows (its top boundary moves toward the tab bar).
+	// Drag up 5 rows: terminal grows by exactly 5 (its top boundary moves
+	// toward the tab bar). Computed independently of applyResizeDrag's own
+	// term.terminal.y1-based formula (starting height + rows moved), not
+	// re-derived through it — a re-derivation would silently pass even if
+	// the anchor-row offset bug this test guards against (applyResizeDrag's
+	// -1, see its own doc comment) were removed.
 	updated, _ = m.Update(drag(40, boundaryY-5))
 	m = updated.(Model)
-	wantHeight := term.terminal.y1 - (boundaryY - 5)
+	wantHeight := defaultTerminalHeight + 5
 	if m.terminalHeight != wantHeight {
-		t.Fatalf("got terminalHeight=%d, want %d", m.terminalHeight, wantHeight)
+		t.Fatalf("got terminalHeight=%d, want %d (default %d + 5 rows dragged)", m.terminalHeight, wantHeight, defaultTerminalHeight)
 	}
 
 	updated, _ = m.Update(release(40, boundaryY-5))
@@ -1243,6 +1248,39 @@ func TestDraggingEditorTerminalBoundaryResizesTerminalHeight(t *testing.T) {
 	}
 	if m.terminalHeight != wantHeight {
 		t.Fatalf("got terminalHeight=%d, want it to stay at %d after release", m.terminalHeight, wantHeight)
+	}
+}
+
+// TestDraggingEditorTerminalBoundaryWithNoPointerMovementLeavesHeightUnchanged
+// covers a pre-existing off-by-one Greptile's bot review caught on PR #6:
+// applyResizeDrag measured the candidate height as term.terminal.y1-y with
+// no adjustment, but the drag's only live trigger row (editorRect.y1-1,
+// since the terminal's own tab bar row is tab-click territory, not a
+// resize trigger, after this branch's own earlier fix) sits one row above
+// where term.terminal.y1-term.tabBar.y0 actually equals the CURRENT
+// terminalHeight — so pressing and releasing at that row without moving
+// the pointer at all silently grew the terminal by one row every time.
+func TestDraggingEditorTerminalBoundaryWithNoPointerMovementLeavesHeightUnchanged(t *testing.T) {
+	m := setupSizedApp(t)
+	if m.terminalHeight != defaultTerminalHeight {
+		t.Fatalf("test setup: got terminalHeight=%d, want default %d", m.terminalHeight, defaultTerminalHeight)
+	}
+	_, panes, _ := m.paneLayout()
+	boundaryY := panes[0].editor.y1 - 1
+
+	updated, _ := m.Update(press(40, boundaryY))
+	m = updated.(Model)
+	// A motion event at the SAME coordinate as the press — applyResizeDrag
+	// only ever runs on a motion event (press/release don't call it, see
+	// Update's MouseActionRelease case), so this is the minimal event that
+	// actually exercises the bug: zero net displacement from the press.
+	updated, _ = m.Update(drag(40, boundaryY))
+	m = updated.(Model)
+	updated, _ = m.Update(release(40, boundaryY))
+	m = updated.(Model)
+
+	if m.terminalHeight != defaultTerminalHeight {
+		t.Fatalf("got terminalHeight=%d after a drag with zero net pointer movement, want it unchanged at %d", m.terminalHeight, defaultTerminalHeight)
 	}
 }
 
@@ -2070,9 +2108,11 @@ func TestDraggingTerminalBoundaryUpdatesEditorViewportBeforeAnyClick(t *testing.
 	// Drag the terminal boundary to shrink the editor's content height from
 	// 11 rows to 4: terminalRect.y1 = bodyTop(1) + paneHeight(22) = 23: to
 	// land terminalHeight at 15 (giving editorHeight = 22-15-1 = 6 outer,
-	// 4 interior after the 2-cell border), drag to y = 23-15 = 8.
+	// 4 interior after the 2-cell border), drag to y = 23-15-1 = 7 (the
+	// -1 cancels applyResizeDrag's own anchor-row offset — see its doc
+	// comment on the resizeTerminal case).
 	m.resizeDrag = resizeTerminal
-	m = m.applyResizeDrag(45, 8)
+	m = m.applyResizeDrag(45, 7)
 	if m.terminalHeight != 15 {
 		t.Fatalf("test setup: got terminalHeight=%d after the drag, want 15", m.terminalHeight)
 	}

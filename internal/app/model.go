@@ -972,7 +972,14 @@ func (m Model) applyResizeDrag(x, y int) Model {
 		}
 	case resizeTerminal:
 		_, _, term := m.paneLayout()
-		m.terminalHeight = m.clampTerminalHeight(term.terminal.y1 - y)
+		// -1: the drag's only live trigger row is editorRect.y1-1 (the
+		// editor's own bottom border, one row above term.tabBar.y0 — see
+		// beginResizeDrag), so term.terminal.y1-y alone would compute a
+		// height one row taller than m.terminalHeight actually is at that
+		// same start row, growing the terminal before the pointer has
+		// moved at all. The -1 cancels that anchor offset: pressing and
+		// releasing without moving leaves terminalHeight unchanged.
+		m.terminalHeight = m.clampTerminalHeight(term.terminal.y1 - y - 1)
 	case resizeEditorSplit:
 		m.splitCol = m.clampSplitCol(x)
 	}
