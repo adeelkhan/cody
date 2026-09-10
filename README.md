@@ -16,7 +16,8 @@ A terminal-based code editor written in Go.
   substring matching, live match-jump as you type, `Enter`/`Shift+Enter` cycle
   next/previous, `Esc` closes
 - **Embedded terminal** — real shell pane; full interactivity: `vim`, `htop`,
-  `ssh`, `Ctrl+C`, etc.
+  `ssh`, `Ctrl+C`, etc.; mouse wheel scrolls into scrollback, with its own
+  scrollbar shown while scrolled
 - **Terminal tabs** — `Ctrl+T` opens a new, fully independent shell session as
   its own tab (own pty, own scrollback); click to switch, click a tab's `×` to
   close it
@@ -137,6 +138,13 @@ starts immediately, the same as `Ctrl+T`; otherwise it starts lazily, the
 next time you focus it. `Ctrl+T` opens a new tab and starts its shell
 immediately.
 
+Scroll the mouse wheel over the terminal pane to scroll into that tab's
+scrollback — a scrollbar appears on its right edge while scrolled, matching
+the editor's own. New output keeps arriving in the background without
+pulling a scrolled-up view back down; any keypress (or scrolling back down
+to the bottom) resumes following live output, the same as most terminal
+apps.
+
 While the terminal pane has focus, keystrokes go directly to the shell.
 `Ctrl+S`/`Ctrl+X`/`Ctrl+C`/`Ctrl+V`/`Ctrl+Z`/`Ctrl+Y`/`Ctrl+K`/`Ctrl+F` pass
 through to the shell. Only `Ctrl+O`, `Ctrl+N`, `Ctrl+T`, and `Ctrl+Q` stay
@@ -175,3 +183,14 @@ send the matching escape sequence.
 - The shell does not restart if it exits; the pane shows the last rendered frame.
 - Abrupt process termination (e.g. `kill -9` on the parent) may leave the spawned
   shell orphaned. `Ctrl+Q` always cleans up correctly.
+- Scrollback holds up to 10,000 lines per tab; generating output far past that
+  cap while scrolled up can very slightly drift the paused view, since the
+  oldest lines get evicted out from under it (extremely unlikely in practice).
+- Narrowing the pane permanently truncates already-printed lines past the new
+  width — the underlying terminal library has no text-reflow support, so
+  there's nothing to restore the trimmed characters from once it's widened
+  back out. A best-effort rescue restores a row if nothing has written to it
+  since the shrink, but an interactive shell's own prompt commonly redraws
+  (and can even scroll) in response to the very resize that shrank the pane,
+  which defeats the rescue for whatever it touches. Full text reflow would
+  fix this properly; tracked as future work.

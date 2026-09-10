@@ -4,9 +4,11 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type fakePty struct {
@@ -57,10 +59,41 @@ type fakeEmulator struct {
 	written []byte
 	w, h    int
 	resizes int
+	// sbLines is test-controlled scrollback content, oldest first —
+	// independent of written/Write, since real scrollback population is
+	// the vt library's own internal concern (see Scrollback in
+	// charmbracelet/x/vt), not something this package's Write forwards to
+	// in the fake.
+	sbLines []string
+	// pushOnWrite, if set, is appended to sbLines the next time Write is
+	// called (then cleared) — simulates a real Write pushing new lines
+	// into scrollback as a side effect, so a test can control exactly
+	// when that growth is observed relative to Update's own
+	// before/after ScrollbackLen() measurement.
+	pushOnWrite []string
+	altScreen   bool
+	// altScreenAfterWrite, if non-nil, sets altScreen to this value the
+	// next time Write is called (then clears itself) — simulates a real
+	// Write transitioning in/out of the alternate screen as a side
+	// effect of the bytes it contains (e.g. vim's own alt-screen
+	// enter/exit escape sequences arriving in that chunk), independent
+	// of whatever IsAltScreen() reported before that particular Write.
+	altScreenAfterWrite *bool
+	// cursorX/cursorY back CursorPosition — test-controlled, since the
+	// fake doesn't track real cursor movement the way the vt library does.
+	cursorX, cursorY int
 }
 
 func (f *fakeEmulator) Write(p []byte) (int, error) {
 	f.written = append(f.written, p...)
+	if len(f.pushOnWrite) > 0 {
+		f.sbLines = append(f.sbLines, f.pushOnWrite...)
+		f.pushOnWrite = nil
+	}
+	if f.altScreenAfterWrite != nil {
+		f.altScreen = *f.altScreenAfterWrite
+		f.altScreenAfterWrite = nil
+	}
 	return len(p), nil
 }
 
@@ -71,6 +104,25 @@ func (f *fakeEmulator) Render() string {
 func (f *fakeEmulator) Resize(w, h int) {
 	f.w, f.h = w, h
 	f.resizes++
+}
+
+func (f *fakeEmulator) ScrollbackLen() int {
+	return len(f.sbLines)
+}
+
+func (f *fakeEmulator) CursorPosition() (x, y int) {
+	return f.cursorX, f.cursorY
+}
+
+func (f *fakeEmulator) ScrollbackLine(index int) string {
+	if index < 0 || index >= len(f.sbLines) {
+		return ""
+	}
+	return f.sbLines[index]
+}
+
+func (f *fakeEmulator) IsAltScreen() bool {
+	return f.altScreen
 }
 
 func withFakes(t *testing.T, p *fakePty, e *fakeEmulator) {
@@ -353,5 +405,800 @@ func TestTwoSessionsIDsNeverCollideEvenThoughBothGenerationCountersStartAtZero(t
 	}
 	if out1.ID() != 1 || out2.ID() != 2 {
 		t.Fatalf("got ids (%d, %d), want (1, 2)", out1.ID(), out2.ID())
+	}
+}
+
+func TestScrollLinesClampsToZeroAndToScrollbackLength(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"a", "b", "c"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+
+	m = m.ScrollLines(1) // positive n scrolls down; already at the bottom
+	if m.scrollOffset != 0 {
+		t.Fatalf("got scrollOffset=%d after scrolling down from the bottom, want 0 (can't scroll past following live output)", m.scrollOffset)
+	}
+
+	m = m.ScrollLines(-100) // scroll way up, past all available scrollback
+	if m.scrollOffset != 3 {
+		t.Fatalf("got scrollOffset=%d after scrolling far past available scrollback, want 3 (clamped to ScrollbackLen())", m.scrollOffset)
+	}
+}
+
+func TestViewAtZeroOffsetIsUnchangedFromPriorBehavior(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+
+	if got, want := m.View(), "live0\nlive1\nlive2"; got != want {
+		t.Fatalf("got View()=%q at scrollOffset=0, want %q — exactly Render()'s own output, unchanged from before scrollback existed (no scrollbar overlay while following)", got, want)
+	}
+}
+
+func TestViewWhenScrolledUpShowsScrollbackContentAndDropsOldestLiveLine(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2", "old3", "old4"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+
+	m = m.ScrollLines(-1) // scroll up by 1 line
+
+	view := m.View()
+	if !strings.Contains(view, "old4") {
+		t.Fatalf("expected the scrolled view to show old4 (the newest scrollback line), got %q", view)
+	}
+	if !strings.Contains(view, "live0") || !strings.Contains(view, "live1") {
+		t.Fatalf("expected the scrolled view to still show live0 and live1, got %q", view)
+	}
+	if strings.Contains(view, "live2") {
+		t.Fatalf("expected the scrolled view to have dropped live2 (the newest live line) off the bottom, got %q", view)
+	}
+	if got := strings.Count(view, "\n"); got != 2 {
+		t.Fatalf("got %d newlines in the scrolled view, want 2 (3 rows)", got)
+	}
+}
+
+func TestKeyPressResumesFollowingAfterScrollingUp(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+	m = m.ScrollLines(-1)
+	if m.scrollOffset == 0 {
+		t.Fatal("test setup: expected scrollOffset > 0 after scrolling up")
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m = updated
+
+	if m.scrollOffset != 0 {
+		t.Fatalf("got scrollOffset=%d after a keypress, want 0 (any input resumes following live output)", m.scrollOffset)
+	}
+}
+
+func TestOutputReceivedWhilePausedKeepsViewedWindowPinned(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2"}, pushOnWrite: []string{"old3", "old4"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+	m = m.ScrollLines(-1)
+	if m.scrollOffset != 1 {
+		t.Fatalf("test setup: got scrollOffset=%d, want 1", m.scrollOffset)
+	}
+
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("more")})
+	m = updated
+
+	if m.scrollOffset != 3 {
+		t.Fatalf("got scrollOffset=%d after 2 new scrollback lines arrived while paused, want 3 (1 + 2 — the viewed window stays pinned to the same absolute content as new output pushes the live bottom down)", m.scrollOffset)
+	}
+}
+
+func TestOutputReceivedWhileFollowingStaysAtOffsetZero(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{pushOnWrite: []string{"old0", "old1"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("more")})
+	m = updated
+
+	if m.scrollOffset != 0 {
+		t.Fatalf("got scrollOffset=%d after output arrived while following, want 0 (nothing to pin — the live view keeps following automatically)", m.scrollOffset)
+	}
+}
+
+// TestScrollLinesIsANoOpDuringAltScreen and
+// TestViewIgnoresStaleScrollOffsetWhenAltScreenBecomesActive cover a real
+// correctness bug caught by review on the original version of this
+// feature: vt.Emulator.Scrollback() always reports the MAIN screen's
+// scrollback, even while a full-screen app (vim, htop, less) has switched
+// to the alternate screen — so scrolling during one of those apps used to
+// splice stale pre-app shell history in among the app's own live rows.
+
+func TestScrollLinesIsANoOpDuringAltScreen(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2"}, altScreen: true}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+
+	m = m.ScrollLines(-1)
+
+	if m.scrollOffset != 0 {
+		t.Fatalf("got scrollOffset=%d after scrolling during alt screen, want 0 (real terminals don't scroll into stale main-screen history while a full-screen app owns the display)", m.scrollOffset)
+	}
+}
+
+func TestViewIgnoresStaleScrollOffsetWhenAltScreenBecomesActive(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+	m = m.ScrollLines(-1) // paused, viewing scrollback, still on the main screen
+	if m.scrollOffset == 0 {
+		t.Fatal("test setup: expected scrollOffset > 0 after scrolling up")
+	}
+
+	// Simulate a full-screen app (vim, htop, less) taking over the
+	// display without the user scrolling again in between — matches how
+	// the real vt.Emulator's IsAltScreen() flips the moment the app's
+	// escape sequence arrives, independent of anything this package does.
+	e.altScreen = true
+	e.written = []byte("vim-line-A\nvim-line-B\nvim-line-C")
+
+	view := m.View()
+	want := "vim-line-A\nvim-line-B\nvim-line-C"
+	if view != want {
+		t.Fatalf("got View()=%q while alt screen is active with a stale scrollOffset, want %q — the live alt-screen content, not blended with stale main-screen scrollback", view, want)
+	}
+}
+
+// TestRenderScrolledViewPadsShortLinesSoTheScrollbarStaysAtAFixedColumn
+// covers a legitimate finding from PR #8's Greptile bot review:
+// lipgloss.NewStyle().MaxWidth() only truncates lines longer than the
+// target width, it never pads shorter ones — so a scrollbar appended
+// directly after each (unpadded) line landed at a different column on
+// every row, drifting left/right depending on each row's own content
+// length, instead of staying fixed at the pane's right edge.
+func TestRenderScrolledViewPadsShortLinesSoTheScrollbarStaysAtAFixedColumn(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"a", "bb", "ccc"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+	m = m.ScrollLines(-1)
+
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3", len(lines))
+	}
+	col0 := strings.IndexAny(lines[0], "│█")
+	if col0 < 0 {
+		t.Fatalf("test setup: row 0 has no scrollbar character at all: %q", lines[0])
+	}
+	for i, line := range lines {
+		col := strings.IndexAny(line, "│█")
+		if col != col0 {
+			t.Fatalf("got scrollbar column=%d on row %d (%q), want %d (same as row 0) — the scrollbar must stay at a fixed column regardless of each row's own content length", col, i, line, col0)
+		}
+	}
+}
+
+// TestScrollOffsetResetsWhenAltScreenExitsDuringAnOutputMsg covers a real
+// gap in the earlier alt-screen fix, caught by CodeRabbit's review of PR
+// #8: View() correctly falls back to the plain live render WHILE the alt
+// screen is active, but scrollOffset itself was never reset — so once an
+// alt-screen app (vim, less, ...) exits, IsAltScreen() goes back to false
+// and View() would immediately re-enter renderScrolledView() with the
+// STALE pre-app scrollOffset, blending old main-screen scrollback into
+// the just-returned live prompt for a frame (until the next scroll or
+// keypress happened to reset it).
+func TestScrollOffsetResetsWhenAltScreenExitsDuringAnOutputMsg(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+	m = m.ScrollLines(-1) // paused, viewing scrollback, on the main screen
+	if m.scrollOffset == 0 {
+		t.Fatal("test setup: expected scrollOffset > 0 after scrolling up")
+	}
+
+	// Simulate: an alt-screen app started at some point after that (the
+	// already-covered transition), and is now exiting within this single
+	// OutputMsg — IsAltScreen() reports true going in, false coming out.
+	e.altScreen = true
+	exiting := false
+	e.altScreenAfterWrite = &exiting
+	e.written = []byte("prompt-returned")
+
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("more")})
+	m = updated
+
+	if m.scrollOffset != 0 {
+		t.Fatalf("got scrollOffset=%d after an alt-screen app exited mid-OutputMsg, want 0 (a stale offset from before the app started must not blend into the just-returned live prompt)", m.scrollOffset)
+	}
+}
+
+// TestRenderScrolledViewAtZeroWidthRendersNoGutter and
+// TestRenderScrolledViewAtWidthOneShowsOnlyTheScrollbarCell cover another
+// CodeRabbit finding on PR #8: at m.width == 0, renderScrolledView's own
+// `if overlayWidth > 0` guard correctly skipped the (now-negative-width)
+// content truncation, but still unconditionally appended the 2-cell
+// " "+bar gutter afterward — so a degenerately narrow pane (the same
+// aggressively-downsized-window class this codebase already floors
+// elsewhere) rendered rows wider than its own claimed width instead of
+// nothing at all.
+
+func TestRenderScrolledViewAtZeroWidthRendersNoGutter(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"a", "b", "c"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(0, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+	m = m.ScrollLines(-1)
+
+	for i, line := range strings.Split(m.View(), "\n") {
+		if got := lipgloss.Width(line); got != 0 {
+			t.Fatalf("got row %d width=%d at pane width 0, want 0 (no content, no gutter): %q", i, got, line)
+		}
+	}
+}
+
+func TestRenderScrolledViewAtWidthOneShowsOnlyTheScrollbarCell(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"a", "b", "c"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(1, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+	m = m.ScrollLines(-1)
+
+	for i, line := range strings.Split(m.View(), "\n") {
+		if got := lipgloss.Width(line); got != 1 {
+			t.Fatalf("got row %d width=%d at pane width 1, want 1 (scrollbar cell only, no content, no leading space): %q", i, got, line)
+		}
+	}
+}
+
+// TestRenderScrolledViewAtWidthTwoDoesNotExceedPaneWidth covers a gap the
+// zero- and one-width guards above didn't close, caught by review: at
+// exactly width 2, overlayWidth (m.width-2) is 0, which fell through to the
+// default branch. Lip Gloss's MaxWidth skips truncation entirely at 0
+// (rather than collapsing to an empty string), so a non-empty line passed
+// through untruncated, and the gutter/scrollbar appended after it pushed
+// the row past m.width.
+func TestRenderScrolledViewAtWidthTwoDoesNotExceedPaneWidth(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"a much longer line than the pane is wide", "b", "c"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(2, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+	m = m.ScrollLines(-1)
+
+	for i, line := range strings.Split(m.View(), "\n") {
+		if got := lipgloss.Width(line); got != 2 {
+			t.Fatalf("got row %d width=%d at pane width 2, want 2: %q", i, got, line)
+		}
+	}
+}
+
+// TestSetSizeCapturesRowsAHeightShrinkWouldOtherwiseDiscard and
+// TestSetSizePreservesRowsLostToARealEmulatorsHeightShrink cover a real,
+// user-reported bug: cat a big file, then shrink the terminal pane (drag
+// the boundary, or resize the whole window), and the live content —
+// including the shell prompt — visibly vanished instead of scrolling into
+// history.
+//
+// Root cause, confirmed directly in the vendored library source
+// (charmbracelet/x/ultraviolet's Buffer.Resize): a height shrink is
+// implemented as `b.Lines = b.Lines[:height]` — keeping the grid's TOP
+// rows and discarding everything below, with no scrollback push at all.
+// Since the cursor (and therefore the most recently written content, like
+// a shell prompt) sits near the BOTTOM of the grid, this is exactly
+// backwards: SetSize now captures the rows about to be destroyed itself,
+// oldest-first, into m.shrinkOverflow — an older-than-scrollback tier
+// renderScrolledView already knows how to render — before delegating to
+// the library's own (lossy) resize.
+
+func TestSetSizeCapturesRowsAHeightShrinkWouldOtherwiseDiscard(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	e.written = []byte("line0\nline1\nline2\nline3\nline4")
+
+	m = m.SetSize(20, 2) // shrink from 5 rows to 2
+
+	// The library keeps Lines[:2] (line0, line1 — the TOP of the old
+	// grid) as the new live screen and discards the rest — so the rows
+	// that actually need capturing are line2/line3/line4, NOT line0/
+	// line1/line2 (an earlier, wrong version of this test/fix captured
+	// the top instead, verified against a live-writing example against
+	// the real library directly, not just reasoned about abstractly).
+	want := []string{"line2", "line3", "line4"}
+	if len(m.shrinkOverflow) != len(want) {
+		t.Fatalf("got shrinkOverflow=%q, want %q (the rows a real emulator's Resize would otherwise silently drop — the ones nearest the cursor, not the ones it keeps)", m.shrinkOverflow, want)
+	}
+	for i, w := range want {
+		if m.shrinkOverflow[i] != w {
+			t.Fatalf("got shrinkOverflow[%d]=%q, want %q", i, m.shrinkOverflow[i], w)
+		}
+	}
+}
+
+// TestSetSizeTrimsTrailingBlankPaddingFromShrinkCapture covers a gap found
+// by review: the emulator's grid is always a full m.height rows, so
+// anything below the cursor is blank padding, not real content. Capturing
+// liveLines[height:] on a shrink can include that padding when the cursor
+// sits above the new cutoff — storing it would render as spurious blank
+// rows in shrinkOverflow and, over a repeated shrink/grow bounce, spend the
+// maxShrinkOverflow budget on nothing but blank lines.
+func TestSetSizeTrimsTrailingBlankPaddingFromShrinkCapture(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	// The cursor is on row 2 ("line2"); rows 3 and 4 are unwritten blank
+	// padding, same as the real emulator would report them.
+	e.written = []byte(strings.Join([]string{"line0", "line1", "line2", "", ""}, "\n"))
+
+	m = m.SetSize(20, 2) // shrink from 5 rows to 2: discards rows 2-4
+
+	want := []string{"line2"}
+	if len(m.shrinkOverflow) != len(want) || m.shrinkOverflow[0] != want[0] {
+		t.Fatalf("got shrinkOverflow=%q, want %q (trailing blank padding rows trimmed, real content kept)", m.shrinkOverflow, want)
+	}
+}
+
+func TestSetSizePreservesRowsLostToARealEmulatorsHeightShrink(t *testing.T) {
+	// Uses the REAL vt.Emulator (only newPty is faked, to avoid spawning
+	// a real shell) — a fake emulator doesn't reproduce the destructive
+	// resize behavior this test exists to guard against, so verifying
+	// against the fake wouldn't prove anything about the actual bug.
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	// Write 5 lines directly through Update — no read loop needed, this
+	// just exercises the same m.emu.Write path a real OutputMsg would.
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("line0\r\nline1\r\nline2\r\nline3\r\nline4")})
+	m = updated
+
+	if !strings.Contains(m.View(), "line4") {
+		t.Fatalf("test setup: expected the live view to show line4 before shrinking; got %q", m.View())
+	}
+
+	m = m.SetSize(20, 2) // shrink from 5 rows to 2 — the real library keeps line0/line1, destroys line2-line4 here without the fix
+
+	// The pane only shows 2 rows at once now, so line3 and line4 (2 apart
+	// in the combined buffer) can't both be on screen simultaneously —
+	// check each at the scroll position that actually reveals it, rather
+	// than asserting them together.
+	//
+	// line4 (the row nearest the cursor — the one the bug report is
+	// specifically about: a shell prompt, the tail of whatever was just
+	// catted) must be reachable by scrolling up just slightly.
+	oneUp := m.ScrollLines(-1)
+	if view := oneUp.View(); !strings.Contains(view, "line4") {
+		t.Fatalf("got View()=%q after scrolling up 1 line post-shrink, want it to contain line4 (the row nearest the cursor — preserved via shrinkOverflow, not silently destroyed by the real emulator's own lossy resize)", view)
+	}
+	// line2 (the OLDEST of the captured rows) must be reachable by
+	// scrolling all the way up, proving the full captured range survived,
+	// not just the row nearest the boundary. line0 is NOT a meaningful
+	// check here — the real library keeps it as part of the new live
+	// screen regardless of whether this fix works at all, so asserting on
+	// it alone (an earlier, wrong version of this test did) would pass
+	// even if the fix captured nothing real.
+	allUp := m.ScrollLines(-10)
+	if view := allUp.View(); !strings.Contains(view, "line2") {
+		t.Fatalf("got View()=%q after scrolling all the way up post-shrink, want it to contain line2 (the oldest captured row)", view)
+	}
+}
+
+// TestSetSizeRestoresContentLostToARealEmulatorsWidthShrink covers a
+// different, user-reported real-terminal bug: dragging a real terminal
+// window's edge narrower then wider again (no output in between)
+// permanently chopped off the tail of already-printed lines, even after
+// growing back past their original width. Root cause, confirmed directly
+// in the vendored library source and empirically against real terminals
+// that don't have this problem (tmux, Ghostty itself): ultraviolet's
+// Buffer.Resize implements a width shrink as `Lines[i] = Lines[i][:width]`
+// for every row — permanently truncating anything past the new column
+// count, with no reflow (the library has no per-row soft-wrap tracking to
+// reflow from). SetSize now snapshots the live grid before a width
+// shrink and restores it if the pane widens back out far enough with no
+// output in between.
+func TestSetSizeRestoresContentLostToARealEmulatorsWidthShrink(t *testing.T) {
+	// Uses the REAL vt.Emulator (only newPty is faked, to avoid spawning
+	// a real shell) — a fake emulator doesn't reproduce the destructive
+	// width-truncation behavior this test guards against.
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 3)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	const line = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123" // 31 chars, fits at width 40 with no wrap
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte(line)})
+	m = updated
+
+	if !strings.Contains(m.View(), line) {
+		t.Fatalf("test setup: expected the live view to contain the full line before shrinking; got %q", m.View())
+	}
+
+	m = m.SetSize(10, 3) // shrink width 40 -> 10: the real library truncates the row to "ABCDEFGHIJ" here without the fix
+	if strings.Contains(m.View(), line) {
+		t.Fatalf("test setup: expected the shrink to actually truncate the line (proving the fix, not the library itself, is what's restoring it later); got %q", m.View())
+	}
+
+	m = m.SetSize(40, 3) // grow back to (at least) the pre-shrink width, no output in between — must restore losslessly
+
+	if !strings.Contains(m.View(), line) {
+		t.Fatalf("got View()=%q after growing back to the pre-shrink width, want the full original line restored, not left truncated", m.View())
+	}
+
+	if x, y := m.emu.CursorPosition(); x != len(line) || y != 0 {
+		t.Fatalf("got cursor position (%d,%d) after the shrink/grow round trip, want (%d,0) — the library clamps the cursor's column on shrink and never restores it on its own, so restoreWidthShrink must reposition it explicitly", x, y, len(line))
+	}
+}
+
+// TestSetSizeWidthRestoreSkipsARowOverwrittenByNewOutput covers the
+// per-row consistency check explicitly: a row that real output has
+// overwritten since the shrink must not be clobbered by the stale
+// snapshot on a later regrowth, even though other, untouched rows still
+// restore normally (see the next test). This is the refined behavior —
+// an earlier version of this fix invalidated the ENTIRE snapshot the
+// moment ANY output arrived, but that turned out to almost never let the
+// rescue fire in practice: real interactive shells commonly redraw their
+// own prompt line in response to the very resize that shrank the pane
+// (confirmed against a real zsh session), which is ordinary output with
+// no way to distinguish it from anything else arriving here.
+func TestSetSizeWidthRestoreSkipsARowOverwrittenByNewOutput(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 3)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	const line = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte(line)})
+	m = updated
+
+	m = m.SetSize(10, 3) // shrink: snapshot captures the full 31-char line
+
+	// Real output overwrites row 0 itself (simulating a shell redrawing
+	// its own prompt on this exact row after the resize) with content
+	// that shares no prefix relationship with the original line.
+	updated, _ = m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("\rNEWCONTENT")})
+	m = updated
+
+	m = m.SetSize(40, 3) // grow back — must NOT replay the stale row over the new content
+
+	if strings.Contains(m.View(), line) {
+		t.Fatalf("got View()=%q after new output overwrote the row then growing back, want the stale snapshot NOT restored over it", m.View())
+	}
+	if !strings.Contains(m.View(), "NEWCONTENT") {
+		t.Fatalf("got View()=%q, want the genuinely newer NEWCONTENT left in place", m.View())
+	}
+}
+
+// TestSetSizeWidthRestoreStillRestoresRowsNewOutputDidNotTouch is the
+// other half of the per-row check: output landing on ONE row (e.g. a
+// shell's own prompt redraw) must not block restoring OTHER rows that
+// nothing wrote to.
+func TestSetSizeWidthRestoreStillRestoresRowsNewOutputDidNotTouch(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 3)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	const line0 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"
+	const line1 = "9876543210ZYXWVUTSRQPONMLKJIHGFEDCBA"
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte(line0 + "\r\n" + line1)})
+	m = updated
+
+	m = m.SetSize(10, 3) // shrink: snapshot captures both full lines
+
+	// New output arrives on row index 1 only (CUP to that row, then
+	// overwrite it) — row 0 is never touched. CUP's row parameter is
+	// 1-indexed, so "2" targets the second row (0-indexed row 1).
+	updated, _ = m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("\x1b[2;1HNEWROW1")})
+	m = updated
+
+	m = m.SetSize(40, 3) // grow back
+
+	if !strings.Contains(m.View(), line0) {
+		t.Fatalf("got View()=%q, want the untouched row 0 restored to its full original content", m.View())
+	}
+	if strings.Contains(m.View(), line1) {
+		t.Fatalf("got View()=%q, want row 1 NOT restored over the genuinely newer NEWROW1", m.View())
+	}
+}
+
+func TestSetSizeShrinkCaptureIsSkippedDuringAltScreen(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{altScreen: true}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	e.written = []byte("vim-a\nvim-b\nvim-c\nvim-d\nvim-e")
+
+	m = m.SetSize(20, 2) // shrink while an alt-screen app is showing
+
+	if len(m.shrinkOverflow) != 0 {
+		t.Fatalf("got shrinkOverflow=%q after shrinking during the alt screen, want empty — capturing the alt-screen app's own UI here would surface as unrelated content blended into main-screen scrollback later", m.shrinkOverflow)
+	}
+}
+
+func TestSetSizeShrinkCaptureIsCappedLikeTheRealScrollbackBuffer(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 2)
+	m, _ = m.Start()
+
+	// Repeatedly grow to 3 rows (writing a fresh, distinguishable row
+	// each time) then shrink back to 2, so every cycle captures exactly
+	// one more row — enough cycles to push shrinkOverflow's length past
+	// maxShrinkOverflow if nothing caps it.
+	const cycles = maxShrinkOverflow + 5
+	for i := 0; i < cycles; i++ {
+		m = m.SetSize(20, 3)
+		e.written = []byte("a\nb\nrow")
+		m = m.SetSize(20, 2)
+	}
+
+	if len(m.shrinkOverflow) != maxShrinkOverflow {
+		t.Fatalf("got len(shrinkOverflow)=%d after %d shrink cycles, want it capped at maxShrinkOverflow=%d (mirroring the real emulator's own scrollback cap)", len(m.shrinkOverflow), cycles, maxShrinkOverflow)
+	}
+}
+
+func TestSetSizeDoesNotCaptureOnAWidthOnlyShrink(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	e.written = []byte("line0\nline1\nline2\nline3\nline4")
+
+	m = m.SetSize(10, 5) // width shrinks, height unchanged
+
+	if len(m.shrinkOverflow) != 0 {
+		t.Fatalf("got shrinkOverflow=%q after a width-only shrink, want empty — only a HEIGHT shrink discards rows in the real emulator", m.shrinkOverflow)
+	}
+}
+
+// TestSequentialSmallShrinksProduceTheSameOrderAsOneBigShrink covers a
+// real, user-reported bug found through manual testing in Ghostty (a real
+// terminal emulator): dragging a real window's edge delivers MANY small,
+// separate resize events as the OS reports each intermediate size — not
+// one big jump the way tmux's `resize-window` (used to verify this
+// feature originally) does. Each of those calls captures the row nearest
+// the cursor first, then the next-nearest, and so on — the exact REVERSE
+// of chronological order — so appending each capture to shrinkOverflow's
+// end (rather than prepending while shrinkContinuing) came out backwards
+// after a multi-step shrink even though a single-step shrink of the same
+// total size was correct.
+//
+// Uses the REAL vt.Emulator (only newPty is faked) for both the
+// multi-step and single-jump sides of the comparison — the fake's Write
+// doesn't reproduce the library's actual resize/discard behavior, so
+// comparing against it wouldn't prove anything about the real bug.
+func TestSequentialSmallShrinksProduceTheSameOrderAsOneBigShrink(t *testing.T) {
+	newSession := func(t *testing.T) Model {
+		t.Helper()
+		p := &fakePty{}
+		origPty := newPty
+		newPty = func(width, height int) (Pty, error) { return p, nil }
+		t.Cleanup(func() { newPty = origPty })
+
+		m := New(1).SetSize(20, 8)
+		m, _ = m.Start()
+		t.Cleanup(func() { _ = m.Close() })
+		updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("r0\r\nr1\r\nr2\r\nr3\r\nr4\r\nr5\r\nr6\r\nr7")})
+		return updated
+	}
+
+	oneJump := newSession(t)
+	oneJump = oneJump.SetSize(20, 1)
+
+	stepwise := newSession(t)
+	for h := 7; h >= 1; h-- {
+		stepwise = stepwise.SetSize(20, h)
+	}
+
+	if len(oneJump.shrinkOverflow) != len(stepwise.shrinkOverflow) {
+		t.Fatalf("got %d entries from the stepwise shrink, %d from the one-jump shrink covering the same total range — want equal", len(stepwise.shrinkOverflow), len(oneJump.shrinkOverflow))
+	}
+	for i := range oneJump.shrinkOverflow {
+		if oneJump.shrinkOverflow[i] != stepwise.shrinkOverflow[i] {
+			t.Fatalf("got stepwise shrinkOverflow=%q, want it to match the one-jump shrink's order %q (a real terminal window drag arrives as many small steps, not one jump — both must produce the same oldest-first order)", stepwise.shrinkOverflow, oneJump.shrinkOverflow)
+		}
+	}
+}
+
+// TestShrinkOverflowRendersBetweenRealScrollbackAndLiveNotBeforeScrollback
+// covers a second real bug found alongside the one above: shrinkOverflow
+// was rendered as a tier OLDER than the emulator's own real scrollback,
+// but the rows it holds were on the LIVE screen at capture time — newer
+// than anything already scrolled into real scrollback by then (the
+// common case: heavy output naturally fills real scrollback first, then
+// a shrink captures whatever's left on the live screen at that moment).
+// With the bug, scrolling up from the live view had to pass through the
+// ENTIRE real scrollback before reaching the content a shrink had just
+// captured — for a big scrollback, that made the just-lost content
+// effectively unreachable by any normal "scroll up a bit" gesture,
+// exactly matching the reported symptom ("only the last ~20 lines are
+// cropped").
+func TestShrinkOverflowRendersBetweenRealScrollbackAndLiveNotBeforeScrollback(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	e.written = []byte("mid0\nmid1\nmid2\nmid3\nmid4")
+
+	m = m.SetSize(20, 2) // captures mid2, mid3, mid4 into shrinkOverflow
+
+	// Scrolling up by 1 from the live view (2 visible rows) should reach
+	// straight into shrinkOverflow's newest entry (mid4) — NOT into the
+	// real scrollback's "old*" entries, which are older and must require
+	// scrolling further to reach.
+	nearby := m.ScrollLines(-1)
+	if view := nearby.View(); !strings.Contains(view, "mid4") {
+		t.Fatalf("got View()=%q after scrolling up 1 line, want it to contain mid4 (shrinkOverflow's newest entry, immediately behind the live view — not buried behind the real scrollback)", view)
+	}
+	if view := nearby.View(); strings.Contains(view, "old2") {
+		t.Fatalf("got View()=%q after scrolling up only 1 line, want it to NOT yet reach old2 (the real scrollback's newest entry, which is older than anything shrinkOverflow holds and should require scrolling further)", view)
+	}
+
+	// Scrolling all the way up must eventually reach the real scrollback
+	// too — it isn't discarded, just correctly positioned as older.
+	allTheWayUp := m.ScrollLines(-100)
+	if view := allTheWayUp.View(); !strings.Contains(view, "old0") {
+		t.Fatalf("got View()=%q after scrolling all the way up, want it to contain old0 (the real scrollback's oldest entry, still reachable)", view)
+	}
+}
+
+// TestShrinkContinuingResetsAfterOutputSoALaterShrinkAppends verifies the
+// other half of shrinkContinuing's contract: once real output arrives
+// after a shrink, a LATER shrink is a genuinely newer batch and must be
+// appended to shrinkOverflow's end, not prepended as if it were still
+// part of the same resize gesture.
+func TestShrinkContinuingResetsAfterOutputSoALaterShrinkAppends(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	e.written = []byte("a0\na1\na2\na3\na4")
+	m = m.SetSize(20, 4) // captures "a4"
+
+	// New output arrives — breaks the "same gesture" chain.
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("more")})
+	m = updated
+
+	e.written = []byte("b0\nb1\nb2\nb3")
+	m = m.SetSize(20, 3) // captures "b3" — must append, not prepend
+
+	want := []string{"a4", "b3"}
+	if len(m.shrinkOverflow) != len(want) {
+		t.Fatalf("got shrinkOverflow=%q, want %q (a4 from the first shrink, then b3 appended after output broke the gesture chain)", m.shrinkOverflow, want)
+	}
+	for i, w := range want {
+		if m.shrinkOverflow[i] != w {
+			t.Fatalf("got shrinkOverflow[%d]=%q, want %q — a shrink after new output must append, not prepend", i, m.shrinkOverflow[i], w)
+		}
+	}
+}
+
+// TestShrinkContinuingResetsOnGrowSoABounceDoesNotMisorderShrinkOverflow
+// covers a gap in the fix above, caught by an independent review: growing
+// the height back also breaks the "same shrink gesture" chain, same as
+// real output does, so a later shrink's capture is no longer part of the
+// same snapshot the earlier captures were. Without resetting
+// shrinkContinuing on growth too, a realistic "shrink, overshoot-correct
+// with a grow, shrink again" bounce within one resize-drag (real
+// OS-driven drags aren't always perfectly monotonic) would PREPEND that
+// later capture — placing it as if it were OLDER than genuinely older
+// content already captured, corrupting the order.
+//
+// Uses the fake emulator rather than the real vt.Emulator: with the real
+// library, growth only ever pads with blank rows, which the trailing-
+// blank trim in SetSize (see
+// TestSetSizeTrimsTrailingBlankPaddingFromShrinkCapture) discards before
+// this ordering question can even arise — so a real-emulator version of
+// this scenario can no longer distinguish a fixed SetSize from a broken
+// one, since either way the post-grow capture ends up empty and there is
+// nothing left to misorder. This test instead drives SetSize's
+// shrinkContinuing/prepend-vs-append machinery directly, standing in a
+// deliberately non-blank line for whatever content a later shrink
+// captures after a grow, so the ordering logic itself stays covered.
+func TestShrinkContinuingResetsOnGrowSoABounceDoesNotMisorderShrinkOverflow(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+
+	e.written = []byte("a\nb\nc\nd\ne")
+	m = m.SetSize(20, 4) // captures e
+
+	e.written = []byte("a\nb\nc\nd")
+	m = m.SetSize(20, 3) // captures d, prepends (still continuing) -> [d, e]
+	if got := m.shrinkOverflow; len(got) != 2 || got[0] != "d" || got[1] != "e" {
+		t.Fatalf("test setup: got shrinkOverflow=%q, want [d e]", got)
+	}
+
+	m = m.SetSize(20, 5) // grow back, no output — must reset shrinkContinuing
+
+	// Z stands in for whatever real content a subsequent shrink captures
+	// after the grow — the fake doesn't reproduce the real library's own
+	// blank padding, so this can be non-blank and exercise the ordering
+	// logic directly regardless of the trim fix.
+	e.written = []byte("a\nb\nc\nd\nZ")
+	m = m.SetSize(20, 4) // captures Z — must APPEND, not prepend
+
+	want := []string{"d", "e", "Z"}
+	if len(m.shrinkOverflow) != len(want) {
+		t.Fatalf("got %d entries after the grow-then-shrink bounce, want %d: %q", len(m.shrinkOverflow), len(want), m.shrinkOverflow)
+	}
+	for i, w := range want {
+		if m.shrinkOverflow[i] != w {
+			t.Fatalf("got shrinkOverflow=%q, want %q — the post-grow capture must not have been prepended ahead of d and e", m.shrinkOverflow, want)
+		}
 	}
 }
