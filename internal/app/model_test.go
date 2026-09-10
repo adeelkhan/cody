@@ -767,11 +767,19 @@ func TestWheelOverTerminalPaneScrollsIntoRealScrollback(t *testing.T) {
 	// all) fails promptly instead of hanging.
 	_, _, term := m.paneLayout()
 	x, y := term.terminal.x0+2, term.terminal.y0+1
+	// A bare "scrollback-row-1" substring also matches "scrollback-row-10",
+	// which the setup above already confirmed is on screen — checking for
+	// that alone would let this test pass on the very first notch without
+	// scrolling having done anything. Match the same newline/space-bounded
+	// form the setup assertion above uses instead.
+	rowOneVisible := func(view string) bool {
+		return strings.Contains(view, "scrollback-row-1\n") || strings.Contains(view, "scrollback-row-1 ")
+	}
 	found := false
 	for i := 0; i < 30; i++ {
 		updated, _ = m.Update(tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
 		m = updated.(Model)
-		if strings.Contains(m.View(), "scrollback-row-1") {
+		if rowOneVisible(m.View()) {
 			found = true
 			break
 		}

@@ -679,6 +679,30 @@ func TestRenderScrolledViewAtWidthOneShowsOnlyTheScrollbarCell(t *testing.T) {
 	}
 }
 
+// TestRenderScrolledViewAtWidthTwoDoesNotExceedPaneWidth covers a gap the
+// zero- and one-width guards above didn't close, caught by review: at
+// exactly width 2, overlayWidth (m.width-2) is 0, which fell through to the
+// default branch. Lip Gloss's MaxWidth skips truncation entirely at 0
+// (rather than collapsing to an empty string), so a non-empty line passed
+// through untruncated, and the gutter/scrollbar appended after it pushed
+// the row past m.width.
+func TestRenderScrolledViewAtWidthTwoDoesNotExceedPaneWidth(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"a much longer line than the pane is wide", "b", "c"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(2, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+	m = m.ScrollLines(-1)
+
+	for i, line := range strings.Split(m.View(), "\n") {
+		if got := lipgloss.Width(line); got != 2 {
+			t.Fatalf("got row %d width=%d at pane width 2, want 2: %q", i, got, line)
+		}
+	}
+}
+
 // TestSetSizeCapturesRowsAHeightShrinkWouldOtherwiseDiscard and
 // TestSetSizePreservesRowsLostToARealEmulatorsHeightShrink cover a real,
 // user-reported bug: cat a big file, then shrink the terminal pane (drag
@@ -722,6 +746,32 @@ func TestSetSizeCapturesRowsAHeightShrinkWouldOtherwiseDiscard(t *testing.T) {
 		if m.shrinkOverflow[i] != w {
 			t.Fatalf("got shrinkOverflow[%d]=%q, want %q", i, m.shrinkOverflow[i], w)
 		}
+	}
+}
+
+// TestSetSizeTrimsTrailingBlankPaddingFromShrinkCapture covers a gap found
+// by review: the emulator's grid is always a full m.height rows, so
+// anything below the cursor is blank padding, not real content. Capturing
+// liveLines[height:] on a shrink can include that padding when the cursor
+// sits above the new cutoff — storing it would render as spurious blank
+// rows in shrinkOverflow and, over a repeated shrink/grow bounce, spend the
+// maxShrinkOverflow budget on nothing but blank lines.
+func TestSetSizeTrimsTrailingBlankPaddingFromShrinkCapture(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	// The cursor is on row 2 ("line2"); rows 3 and 4 are unwritten blank
+	// padding, same as the real emulator would report them.
+	e.written = []byte(strings.Join([]string{"line0", "line1", "line2", "", ""}, "\n"))
+
+	m = m.SetSize(20, 2) // shrink from 5 rows to 2: discards rows 2-4
+
+	want := []string{"line2"}
+	if len(m.shrinkOverflow) != len(want) || m.shrinkOverflow[0] != want[0] {
+		t.Fatalf("got shrinkOverflow=%q, want %q (trailing blank padding rows trimmed, real content kept)", m.shrinkOverflow, want)
 	}
 }
 
@@ -960,44 +1010,58 @@ func TestShrinkContinuingResetsAfterOutputSoALaterShrinkAppends(t *testing.T) {
 // TestShrinkContinuingResetsOnGrowSoABounceDoesNotMisorderShrinkOverflow
 // covers a gap in the fix above, caught by an independent review: growing
 // the height back also breaks the "same shrink gesture" chain, same as
-// real output does — the library pads the grown grid with new, empty
-// rows, so a later shrink's capture is no longer part of the same
-// snapshot the earlier captures were. Without resetting shrinkContinuing
-// on growth too, a realistic "shrink, overshoot-correct with a grow,
-// shrink again" bounce within one resize-drag (real OS-driven drags
-// aren't always perfectly monotonic) would PREPEND that later capture —
-// placing a fresh blank padding row as if it were OLDER than genuinely
-// older content already captured, corrupting the order.
+// real output does, so a later shrink's capture is no longer part of the
+// same snapshot the earlier captures were. Without resetting
+// shrinkContinuing on growth too, a realistic "shrink, overshoot-correct
+// with a grow, shrink again" bounce within one resize-drag (real
+// OS-driven drags aren't always perfectly monotonic) would PREPEND that
+// later capture — placing it as if it were OLDER than genuinely older
+// content already captured, corrupting the order.
 //
-// Uses the REAL vt.Emulator (only newPty is faked): the fake's Resize
-// doesn't pad the grid with new rows on growth the way the real library
-// does, so it can't reproduce the scenario this test guards against.
+// Uses the fake emulator rather than the real vt.Emulator: with the real
+// library, growth only ever pads with blank rows, which the trailing-
+// blank trim in SetSize (see
+// TestSetSizeTrimsTrailingBlankPaddingFromShrinkCapture) discards before
+// this ordering question can even arise — so a real-emulator version of
+// this scenario can no longer distinguish a fixed SetSize from a broken
+// one, since either way the post-grow capture ends up empty and there is
+// nothing left to misorder. This test instead drives SetSize's
+// shrinkContinuing/prepend-vs-append machinery directly, standing in a
+// deliberately non-blank line for whatever content a later shrink
+// captures after a grow, so the ordering logic itself stays covered.
 func TestShrinkContinuingResetsOnGrowSoABounceDoesNotMisorderShrinkOverflow(t *testing.T) {
 	p := &fakePty{}
-	origPty := newPty
-	newPty = func(width, height int) (Pty, error) { return p, nil }
-	t.Cleanup(func() { newPty = origPty })
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
 
-	m := New(1).SetSize(20, 10)
+	m := New(1).SetSize(20, 5)
 	m, _ = m.Start()
-	t.Cleanup(func() { _ = m.Close() })
-	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("r0\r\nr1\r\nr2\r\nr3\r\nr4\r\nr5\r\nr6\r\nr7\r\nr8\r\nr9")})
-	m = updated
 
-	m = m.SetSize(20, 9) // captures r9
-	m = m.SetSize(20, 8) // captures r8, prepends (still continuing) -> [r8, r9]
-	if got := m.shrinkOverflow; len(got) != 2 || got[0] != "r8" || got[1] != "r9" {
-		t.Fatalf("test setup: got shrinkOverflow=%q, want [r8 r9]", got)
+	e.written = []byte("a\nb\nc\nd\ne")
+	m = m.SetSize(20, 4) // captures e
+
+	e.written = []byte("a\nb\nc\nd")
+	m = m.SetSize(20, 3) // captures d, prepends (still continuing) -> [d, e]
+	if got := m.shrinkOverflow; len(got) != 2 || got[0] != "d" || got[1] != "e" {
+		t.Fatalf("test setup: got shrinkOverflow=%q, want [d e]", got)
 	}
 
-	m = m.SetSize(20, 10) // grow back, no output — must reset shrinkContinuing
+	m = m.SetSize(20, 5) // grow back, no output — must reset shrinkContinuing
 
-	m = m.SetSize(20, 9) // captures whatever the grow padded in as the new bottom row — must APPEND, not prepend
+	// Z stands in for whatever real content a subsequent shrink captures
+	// after the grow — the fake doesn't reproduce the real library's own
+	// blank padding, so this can be non-blank and exercise the ordering
+	// logic directly regardless of the trim fix.
+	e.written = []byte("a\nb\nc\nd\nZ")
+	m = m.SetSize(20, 4) // captures Z — must APPEND, not prepend
 
-	if len(m.shrinkOverflow) != 3 {
-		t.Fatalf("got %d entries after the grow-then-shrink bounce, want 3", len(m.shrinkOverflow))
+	want := []string{"d", "e", "Z"}
+	if len(m.shrinkOverflow) != len(want) {
+		t.Fatalf("got %d entries after the grow-then-shrink bounce, want %d: %q", len(m.shrinkOverflow), len(want), m.shrinkOverflow)
 	}
-	if m.shrinkOverflow[0] != "r8" || m.shrinkOverflow[1] != "r9" {
-		t.Fatalf("got shrinkOverflow=%q, want r8 and r9 to remain the first two entries — the post-grow capture must not have been prepended ahead of them", m.shrinkOverflow)
+	for i, w := range want {
+		if m.shrinkOverflow[i] != w {
+			t.Fatalf("got shrinkOverflow=%q, want %q — the post-grow capture must not have been prepended ahead of d and e", m.shrinkOverflow, want)
+		}
 	}
 }

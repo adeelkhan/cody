@@ -172,6 +172,14 @@ func (m Model) SetSize(width, height int) Model {
 		liveLines := strings.Split(m.emu.Render(), "\n")
 		from := max(0, min(height, len(liveLines)))
 		captured := liveLines[from:]
+		// The grid is always full-height, so everything below the
+		// cursor is blank padding, not real content — storing it would
+		// render as empty rows between the real content and the live
+		// screen, and a repeated shrink/grow bounce would spend the
+		// maxShrinkOverflow budget on nothing but blank lines.
+		for len(captured) > 0 && strings.TrimSpace(captured[len(captured)-1]) == "" {
+			captured = captured[:len(captured)-1]
+		}
 		if m.shrinkContinuing {
 			// Still the same resize gesture as the previous capture (no
 			// output has arrived since) — this batch is OLDER than that
@@ -465,6 +473,13 @@ func (m Model) renderScrolledView() string {
 			lines[row] = ""
 		case m.width == 1:
 			lines[row] = scrollbarStyle.Render(string(barRune))
+		case overlayWidth <= 0:
+			// m.width == 2: overlayWidth (m.width-2) is 0, and Lip Gloss's
+			// MaxWidth skips truncation entirely at 0 rather than
+			// collapsing the line to empty — falling through to the
+			// default branch below would let a non-empty line pass
+			// through untruncated and push the row past m.width.
+			lines[row] = " " + scrollbarStyle.Render(string(barRune))
 		default:
 			// MaxWidth truncates a line longer than overlayWidth, but
 			// (unlike editor/filetree's own padRow, which this mirrors)
