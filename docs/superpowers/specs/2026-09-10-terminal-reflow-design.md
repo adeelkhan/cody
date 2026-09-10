@@ -282,6 +282,34 @@ gaps discovered later:
   back down to fill freed space; this spec leaves freed rows blank
   instead (their content remains reachable by scrolling up, same as
   today). Revisit if this proves visually confusing in practice.
+- **Fixing either direction of the wrap-detection heuristic's
+  misjudgment** (§3.2). The heuristic — "the row above is a wrapped
+  continuation iff its *rendered* width fills the pane" — can be wrong
+  both ways, and both are accepted, pinned-by-test limitations rather
+  than open bugs:
+  1. **False join.** A row that fills the full width without actually
+     having wrapped (a box-drawing border exactly as wide as the pane)
+     is joined with the row below it and rewrapped as one logical line.
+     Pinned by `TestGroupIntoLogicalLinesFalseJoinOnAFullWidthRow`.
+  2. **Missed join.** A row that genuinely *did* soft-wrap but whose
+     last cell is blank measures *narrower* than the full width, because
+     the library's rendering strips trailing blank cells — so it reads
+     as "not a continuation" and is never rejoined on a later grow.
+     Common in prose, where a wrap point often lands right after a
+     space: at width 10, `abcde fgh ijk` renders as `abcde fgh` / `ijk`
+     (the boundary space already gone from the rendered row), and
+     growing back to width 40 leaves the two rows unjoined. Pinned by
+     `TestGroupIntoLogicalLinesMissesAWrapBoundaryEndingInBlank`.
+
+  Both stem from the same root cause: a rendered row string cannot
+  distinguish "blank cell inside a filled row" from "row that ends
+  here". The principled fix needs cell-level grid access (a
+  `lastNonBlankCol`-style check, or a real per-row wrap flag), which §2
+  rules out — no new `Emulator` methods, no cell-level API surface — and
+  which the upstream-fix bullet below is the real home for. A
+  heuristic workaround (e.g. treating a row one column short as a
+  continuation) would only trade one misjudgment for a more frequent
+  one, so it is deliberately not attempted.
 - **Perfect column accounting for every mixed-width edge case**
   (combining characters, zero-width joiners, ambiguous-width
   characters under different locale conventions). The one

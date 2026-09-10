@@ -187,10 +187,15 @@ send the matching escape sequence.
   cap while scrolled up can very slightly drift the paused view, since the
   oldest lines get evicted out from under it (extremely unlikely in practice).
 - Reflow re-wraps already-printed content on every width change, so
-  narrowing and widening the pane no longer loses characters in the
-  common case. It relies on a heuristic (a row that fills the pane's
-  full width is assumed to be a soft-wrapped continuation of the next
-  one) rather than the underlying library tracking wrapping explicitly,
-  so content that happens to fill the full width without actually being
-  wrapped — a box-drawing border the same width as the pane, for
-  example — can be incorrectly joined with the row after it.
+  narrowing and widening the pane generally preserves text that a plain
+  resize would have truncated. It relies on a heuristic — a row whose
+  rendered content fills the pane's full width is assumed to be
+  soft-wrapped into the row below — rather than the underlying library
+  tracking wrapping explicitly, and that heuristic can misjudge in
+  either direction: content that fills the full width without actually
+  being wrapped (a box-drawing border exactly as wide as the pane) gets
+  joined with the row after it, while a row that genuinely did wrap but
+  ends on a blank cell (common in prose, where the wrap point often
+  lands just after a space) measures narrower than the full width and is
+  never rejoined on a later widen. Both are known limitations of working
+  from rendered rows rather than raw terminal cells.

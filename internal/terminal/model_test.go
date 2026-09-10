@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1124,6 +1125,135 @@ func TestSetSizeReflowsWidthGrowRejoinsWrappedContent(t *testing.T) {
 
 	if !strings.Contains(m.View(), line) {
 		t.Fatalf("got View()=%q after growing back to the original width, want the full rejoined line %q", m.View(), line)
+	}
+}
+
+// TestSetSizeReflowLeavesNoStaleTailWhenARowGetsShorter asserts the
+// FULL grid content (not just that the reflowed text appears somewhere
+// in it): reflow's write-back recomputes whole rows, so any row whose
+// new content is SHORTER than what that row held before must have its
+// old tail erased, not left showing past the end of the new content.
+// Growing 10 -> 12 with "1234567890abcde" on the grid rewraps to
+// ["1234567890ab", "cde"]; writing "cde" over the old "abcde" without
+// erasing first leaves "cdede" — the old "de" surviving as garbage.
+// Uses the REAL vt.Emulator (only newPty is faked), since the fake's
+// Render() just echoes bytes written and can't reproduce a grid
+// overwrite at all.
+func TestSetSizeReflowLeavesNoStaleTailWhenARowGetsShorter(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(10, 5)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("1234567890abcde")})
+	m = updated // grid rows: "1234567890" / "abcde"
+
+	m = m.SetSize(12, 5) // grow width only: rewraps to "1234567890ab" / "cde"
+
+	got := strings.Split(m.View(), "\n")
+	want := []string{"1234567890ab", "cde", "", "", ""}
+	if len(got) != len(want) {
+		t.Fatalf("got %d rows %q, want %d rows %q", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got rows %q, want %q — row %d differs (a stale tail from the pre-reflow content was left behind)", got, want, i)
+		}
+	}
+}
+
+// TestSetSizeReflowShrinkThenGrowLeavesNoDuplicateRows is the same
+// erase requirement one row lower: rows the reflow no longer needs at
+// all (because the content rejoined into fewer, wider rows) must be
+// blanked, not left holding the previous, narrower wrapping. The design
+// spec's §5 says freed rows are left blank — without an explicit erase
+// they instead keep showing stale duplicates of content that now also
+// appears, correctly rejoined, above them.
+func TestSetSizeReflowShrinkThenGrowLeavesNoDuplicateRows(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 10)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	const line = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" // 36 chars: one row at width 40, four at width 10
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte(line)})
+	m = updated
+
+	m = m.SetSize(10, 10) // shrink: wraps across 4 rows
+	m = m.SetSize(40, 10) // grow back: rejoins into 1 row, freeing rows 2-4
+
+	got := strings.Split(m.View(), "\n")
+	if len(got) != 10 {
+		t.Fatalf("got %d rows %q, want 10 (the pane's height)", len(got), got)
+	}
+	if got[0] != line {
+		t.Fatalf("got first row %q, want the fully rejoined line %q", got[0], line)
+	}
+	for i, row := range got[1:] {
+		if strings.TrimSpace(row) != "" {
+			t.Fatalf("got row %d = %q, want it blank — the narrower wrapping from before the grow was left behind as a stale duplicate (full grid: %q)", i+1, row, got)
+		}
+	}
+}
+
+// TestSetSizeReflowsStyledContentWithoutHangingOrLoss runs COLORIZED
+// content — the normal case for any real shell, and what every other
+// test in this feature happened to miss — through the whole pipeline
+// against the REAL vt.Emulator. Pre-fix this hung the entire app on the
+// very first width change (see
+// TestRewrapLogicalLineWithStyledContentDoesNotHang for the mechanism),
+// so it runs under a timeout: a regression must fail the test rather
+// than wedge the suite. The assertions are on the FULL grid shape, so a
+// stale tail or duplicated row would be caught too, and on the styling
+// still being present after each step.
+func TestSetSizeReflowsStyledContentWithoutHangingOrLoss(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(10, 5)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	// Red background across a line long enough to wrap at width 10.
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("\x1b[41m1234567890abcde\x1b[0m")})
+	m = updated
+
+	type step struct {
+		width int
+		want  []string
+	}
+	steps := []step{
+		{12, []string{"\x1b[41m1234567890ab\x1b[m", "\x1b[41mcde\x1b[m", "", "", ""}},
+		{6, []string{"\x1b[41m123456\x1b[m", "\x1b[41m7890ab\x1b[m", "\x1b[41mcde\x1b[m", "", ""}},
+		{40, []string{"\x1b[41m1234567890abcde\x1b[m", "", "", "", ""}},
+	}
+	for _, s := range steps {
+		done := make(chan Model, 1)
+		go func(m Model, width int) { done <- m.SetSize(width, 5) }(m, s.width)
+		select {
+		case m = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("SetSize(%d, 5) hung on ANSI-styled grid content — reflow's rewrap loop is spinning on a zero-width styled remainder", s.width)
+		}
+		got := strings.Split(m.View(), "\n")
+		if len(got) != len(s.want) {
+			t.Fatalf("at width %d: got %d rows %q, want %d rows %q", s.width, len(got), got, len(s.want), s.want)
+		}
+		for i := range s.want {
+			if got[i] != s.want[i] {
+				t.Fatalf("at width %d: got rows %q, want %q — row %d differs", s.width, got, s.want, i)
+			}
+		}
 	}
 }
 

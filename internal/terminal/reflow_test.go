@@ -1,9 +1,11 @@
-// internal/terminal/reflow_test.go
 package terminal
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestIsRowFilledToEdgeAtExactWidth(t *testing.T) {
@@ -70,6 +72,37 @@ func TestGroupIntoLogicalLinesFalseJoinOnAFullWidthRow(t *testing.T) {
 	}
 }
 
+// TestGroupIntoLogicalLinesMissesAWrapBoundaryEndingInBlank pins the
+// INVERSE of the limitation above, and is likewise a KNOWN, ACCEPTED
+// limitation rather than a bug awaiting a fix (see the design spec's
+// §8): a row that genuinely DID soft-wrap, but whose last cell happens
+// to be blank, measures NARROWER than the full width — the underlying
+// library's rendering strips trailing blank cells — so the heuristic
+// reads it as "not a continuation" and never rejoins it on a later
+// grow. This is common in prose, where a wrap point often lands right
+// after a space. Verified against the real vt.Emulator: printing
+// "abcde fgh ijk" at width 10 renders as "abcde fgh" / "ijk" (the
+// boundary space at column 10 already gone from the rendered row), and
+// growing back to width 40 leaves the two rows unjoined.
+//
+// The principled fix needs cell-level grid access to distinguish a
+// blank cell inside a filled row from an absent one, which the design
+// deliberately rules out (spec §2's "no new Emulator methods"
+// constraint). The test exists so a future change can't silently make
+// this worse unnoticed.
+func TestGroupIntoLogicalLinesMissesAWrapBoundaryEndingInBlank(t *testing.T) {
+	// "abcde fgh " filled all 10 columns when printed, but renders back
+	// as the 9-column "abcde fgh".
+	lines, counts := groupIntoLogicalLines([]string{"abcde fgh", "ijk"}, 10)
+	wantLines := []string{"abcde fgh", "ijk"}
+	if len(lines) != 2 || lines[0] != wantLines[0] || lines[1] != wantLines[1] {
+		t.Fatalf("got lines=%q, want %q — the genuinely-wrapped pair left UNjoined (pinning the known heuristic limitation, not fixing it)", lines, wantLines)
+	}
+	if len(counts) != 2 || counts[0] != 1 || counts[1] != 1 {
+		t.Fatalf("got counts=%v, want [1 1]", counts)
+	}
+}
+
 func TestRewrapLogicalLineNarrowsWithoutLoss(t *testing.T) {
 	got := rewrapLogicalLine("ABCDEFGHIJKL", 6)
 	want := []string{"ABCDEF", "GHIJKL"}
@@ -131,6 +164,69 @@ func TestRewrapLogicalLineAtWidthOneWithWideCharacterDoesNotHang(t *testing.T) {
 	}
 }
 
+// TestRewrapLogicalLineWithStyledContentDoesNotHang covers the case
+// that matters most in practice, since virtually every real shell
+// prompt and command output is colorized: ansi.Truncate/TruncateLeft
+// re-emit the ACTIVE SGR state even once no visible content is left, so
+// the final remainder of a styled logical line is a non-empty but
+// ZERO-WIDTH string (pure escape sequences). A progress guard that only
+// checks for an EMPTY row never fires on it — ansi.StringWidth is 0, so
+// ansi.TruncateLeft(remaining, 0, "") returns the remainder unchanged
+// and the loop spins forever, appending a row per iteration until the
+// process runs out of memory. Verified against the real pinned
+// charmbracelet/x/ansi: "\x1b[1mbold\x1b[0m" truncated at width 10
+// yields a remainder of "\x1b[1m\x1b[0m" that never shrinks.
+func TestRewrapLogicalLineWithStyledContentDoesNotHang(t *testing.T) {
+	done := make(chan []string, 1)
+	go func() { done <- rewrapLogicalLine("\x1b[1mbold\x1b[0m", 10) }()
+	select {
+	case got := <-done:
+		if len(got) != 1 {
+			t.Fatalf("got %d rows %q, want exactly 1 — the content is only 4 columns wide and fits whole at width 10", len(got), got)
+		}
+		if ansi.Strip(got[0]) != "bold" {
+			t.Fatalf("got visible text %q from row %q, want %q", ansi.Strip(got[0]), got[0], "bold")
+		}
+		if w := ansi.StringWidth(got[0]); w != 4 {
+			t.Fatalf("got display width %d for row %q, want 4 — the zero-width remainder must not add visible columns", w, got[0])
+		}
+		if !strings.Contains(got[0], "\x1b[0m") {
+			t.Fatalf("got row %q, want the trailing SGR reset carried through rather than stranded and dropped — without it the style bleeds into whatever renders next", got[0])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("rewrapLogicalLine hung on ANSI-styled content — the loop's progress guard must treat a zero-WIDTH row as no progress, not just an empty one")
+	}
+}
+
+// TestRewrapLogicalLineWithStyledContentAcrossMultipleRows is the same
+// zero-width-remainder hazard on a styled line long enough to need
+// several rows, with the style changing mid-line (the shape of a real
+// colorized prompt): every row must carry its full width of visible
+// content, nothing may be dropped, and the whole thing must terminate.
+func TestRewrapLogicalLineWithStyledContentAcrossMultipleRows(t *testing.T) {
+	const line = "\x1b[1;31mRED\x1b[32mGREEN\x1b[0mplain\x1b[4munder\x1b[0m" // 18 visible columns
+	done := make(chan []string, 1)
+	go func() { done <- rewrapLogicalLine(line, 6) }()
+	select {
+	case got := <-done:
+		if len(got) != 3 {
+			t.Fatalf("got %d rows %q, want 3 — 18 visible columns at width 6", len(got), got)
+		}
+		var visible strings.Builder
+		for i, row := range got {
+			if w := ansi.StringWidth(row); w != 6 {
+				t.Fatalf("got display width %d for row %d (%q), want 6", w, i, row)
+			}
+			visible.WriteString(ansi.Strip(row))
+		}
+		if visible.String() != "REDGREENplainunder" {
+			t.Fatalf("got visible text %q across the rewrapped rows %q, want %q — no styled content may be dropped", visible.String(), got, "REDGREENplainunder")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("rewrapLogicalLine hung on multi-row ANSI-styled content — see TestRewrapLogicalLineWithStyledContentDoesNotHang")
+	}
+}
+
 func TestCursorOffsetWithinFirstPhysicalRow(t *testing.T) {
 	_, counts := groupIntoLogicalLines([]string{"short", "next"}, 10)
 	li, off := cursorOffset([]string{"short", "next"}, counts, 0, 3)
@@ -159,7 +255,9 @@ func TestCursorAfterRewrapLandsOnTheCorrectRowAndColumn(t *testing.T) {
 }
 
 func TestReflowRowsNarrowsAndMapsCursorEndToEnd(t *testing.T) {
-	rows := []string{"1234567890", "abcde"}                  // one logical line, 12 wide, at old width 10... wait: "1234567890"+"abcde" = 15 chars
+	// One logical line, "1234567890abcde" (15 columns), wrapped across
+	// two physical rows at old width 10.
+	rows := []string{"1234567890", "abcde"}
 	newRows, newRow, newCol := reflowRows(rows, 10, 6, 1, 1) // cursor at row1, col1 = the 'b'
 	wantRows := []string{"123456", "7890ab", "cde"}
 	if len(newRows) != len(wantRows) {

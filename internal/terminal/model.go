@@ -292,7 +292,12 @@ func (m Model) SetSize(width, height int) Model {
 // by reflowRows) into the live grid — which by the time this runs has
 // already been resized to its final width/height — and repositions the
 // cursor to (newCursorRow, newCursorCol), matching reflowRows' own
-// (row, col) return order. Rows beyond newHeight are appended into
+// (row, col) return order. Every row it touches is erased before being
+// written, and every row from len(newRows) through newHeight-1 is
+// erased outright: reflow recomputes the grid's whole content, so
+// anything already there is stale by construction and writing over it
+// without erasing leaves the old, longer content showing through (see
+// the row loops' own comments). Rows beyond newHeight are appended into
 // m.shrinkOverflow (see its own doc comment) rather than discarded,
 // mirroring how a real terminal pushes reflow overflow into scrollback:
 // this is always an append, never a prepend, since reflow has no
@@ -319,7 +324,25 @@ func (m Model) writeReflowedRows(newRows []string, newCursorRow, newCursorCol, n
 		if i >= newHeight {
 			break
 		}
-		fmt.Fprintf(&buf, "\x1b[%d;1H%s", i+1, row)
+		// \x1b[K (erase to end of line) before the content: reflow
+		// recomputes the WHOLE content of every row it touches, so
+		// anything already sitting in this row is stale by
+		// construction. Writing without erasing leaves whatever the
+		// row held before showing past the end of the new, shorter
+		// content — e.g. rewrapping "1234567890"/"abcde" from width 10
+		// to 12 writes "cde" over the old "abcde" and leaves "cdede".
+		fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[K%s", i+1, row)
+	}
+	// Rows the reflow doesn't reach at all still hold the PREVIOUS
+	// wrapping and must be blanked too, or content that just rejoined
+	// into fewer, wider rows above stays visible below as a stale
+	// duplicate of itself (the design spec's §5 states freed rows are
+	// left blank — this is what makes that true). Safe to erase
+	// unconditionally: SetSize already trimmed reflowRows' input down to
+	// the last meaningful row, so everything past newRows was blank
+	// padding anyway.
+	for i := len(newRows); i < newHeight; i++ {
+		fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[K", i+1)
 	}
 	if newHeight > 0 {
 		fmt.Fprintf(&buf, "\x1b[%d;%dH", newCursorRow+1, newCursorCol+1)
@@ -524,12 +547,14 @@ var scrollbarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 // emulator's own scrollback (ScrollbackLen/ScrollbackLine — normally far
 // more content than a single shrink ever captures, everything that
 // scrolled off before the shrink happened), then m.shrinkOverflow (rows a
-// height shrink would otherwise have destroyed — see SetSize — which
-// were still on the live screen at capture time, making them newer than
-// whatever was already in scrollback then), then the live screen's own
-// rows. The live screen's individual rows come from splitting Render()'s
-// own output on "\n" — safe because ANSI SGR/CSI escape sequences never
-// contain a raw newline byte.
+// resize would otherwise have destroyed — either a height shrink, see
+// SetSize, or a width-only reflow needing more rows than the current
+// height holds, see writeReflowedRows — which were still on the live
+// screen at capture time, making them newer than whatever was already in
+// scrollback then), then the live screen's own rows. The live screen's
+// individual rows come from splitting Render()'s own output on "\n" —
+// safe because ANSI SGR/CSI escape sequences never contain a raw
+// newline byte.
 func (m Model) renderScrolledView() string {
 	liveLines := strings.Split(m.emu.Render(), "\n")
 	overflowLen := len(m.shrinkOverflow)

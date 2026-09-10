@@ -1,4 +1,3 @@
-// internal/terminal/reflow.go
 package terminal
 
 import "github.com/charmbracelet/x/ansi"
@@ -46,6 +45,13 @@ func groupIntoLogicalLines(rows []string, width int) (lines []string, physicalRo
 // Truncate dropped a trailing wide cluster, row's width is
 // newWidth-1, so the next TruncateLeft naturally leaves that cluster as
 // the first thing in the next row instead of skipping or duplicating it.
+//
+// Loop termination rests entirely on the zero-progress guard below:
+// every iteration that does NOT break consumed at least one display
+// column, and TruncateLeft(remaining, consumed, "") drops exactly those
+// columns, so remaining's display width strictly decreases each time
+// and must reach the guard's zero-width condition (or "") in finitely
+// many steps.
 func rewrapLogicalLine(line string, newWidth int) []string {
 	if line == "" {
 		return []string{""}
@@ -54,18 +60,42 @@ func rewrapLogicalLine(line string, newWidth int) []string {
 	remaining := line
 	for remaining != "" {
 		row := ansi.Truncate(remaining, newWidth, "")
-		if row == "" {
-			// Degenerate case: not even one cluster fits at this width
-			// (e.g. newWidth==1 with a double-width character next).
-			// Dump the remainder as a single overflowing row rather
-			// than looping forever — an extreme edge case, not the
-			// target scenario, so "doesn't hang" is the bar, not
-			// "doesn't overflow visually."
-			rows = append(rows, remaining)
+		consumed := ansi.StringWidth(row)
+		if consumed == 0 {
+			// No VISIBLE progress this iteration, so continuing would
+			// loop forever: TruncateLeft(remaining, 0, "") returns
+			// remaining unchanged. Two distinct ways to land here, and
+			// checking the row's display WIDTH (not just row == "")
+			// catches both:
+			//
+			//  1. row is a non-empty, zero-width string — pure escape
+			//     sequences with no visible cell. Truncate/TruncateLeft
+			//     re-emit the ACTIVE SGR/OSC-8 state even when nothing
+			//     visible is left, so the final remainder of ANY styled
+			//     logical line (virtually every real shell prompt) looks
+			//     like this. Attach that remainder to the PREVIOUS row
+			//     rather than dropping it — a trailing SGR reset still
+			//     matters, and being zero-width it can't push that row
+			//     past newWidth.
+			//  2. row is empty: not even one cluster fits at this width
+			//     (e.g. newWidth==1 with a double-width character next).
+			//     The remainder still has visible content, so it gets
+			//     dumped as a single overflowing row of its own rather
+			//     than smeared onto the previous one — an extreme edge
+			//     case, not the target scenario, so "doesn't hang" is
+			//     the bar, not "doesn't overflow visually."
+			//
+			// With no previous row to attach to (case 1 on the very
+			// first iteration), the remainder becomes its own row —
+			// there is nothing else to do with it.
+			if len(rows) > 0 && ansi.StringWidth(remaining) == 0 {
+				rows[len(rows)-1] += remaining
+			} else {
+				rows = append(rows, remaining)
+			}
 			break
 		}
 		rows = append(rows, row)
-		consumed := ansi.StringWidth(row)
 		remaining = ansi.TruncateLeft(remaining, consumed, "")
 	}
 	return rows
