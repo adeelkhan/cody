@@ -1200,23 +1200,24 @@ func TestDraggingEditorTerminalBoundaryResizesTerminalHeight(t *testing.T) {
 	if m.terminalHeight != defaultTerminalHeight {
 		t.Fatalf("got terminalHeight=%d, want default %d", m.terminalHeight, defaultTerminalHeight)
 	}
-	_, _, terminalRect := m.paneLayout()
+	_, panes, term := m.paneLayout()
+	boundaryY := panes[0].editor.y1 - 1 // editor's own bottom border row
 
-	updated, _ := m.Update(press(40, terminalRect.y0)) // terminal's own top border row
+	updated, _ := m.Update(press(40, boundaryY))
 	m = updated.(Model)
 	if m.resizeDrag != resizeTerminal {
 		t.Fatalf("got resizeDrag=%v, want resizeTerminal", m.resizeDrag)
 	}
 
 	// Drag up: terminal grows (its top boundary moves toward the tab bar).
-	updated, _ = m.Update(drag(40, terminalRect.y0-5))
+	updated, _ = m.Update(drag(40, boundaryY-5))
 	m = updated.(Model)
-	wantHeight := terminalRect.y1 - (terminalRect.y0 - 5)
+	wantHeight := term.terminal.y1 - (boundaryY - 5)
 	if m.terminalHeight != wantHeight {
 		t.Fatalf("got terminalHeight=%d, want %d", m.terminalHeight, wantHeight)
 	}
 
-	updated, _ = m.Update(release(40, terminalRect.y0-5))
+	updated, _ = m.Update(release(40, boundaryY-5))
 	m = updated.(Model)
 	if m.resizeDrag != resizeNone {
 		t.Fatal("expected release to end the drag")
@@ -1228,9 +1229,10 @@ func TestDraggingEditorTerminalBoundaryResizesTerminalHeight(t *testing.T) {
 
 func TestDraggingEditorTerminalBoundaryClampsToMinAndMaxHeight(t *testing.T) {
 	m := setupSizedApp(t)
-	_, _, terminalRect := m.paneLayout()
+	_, panes, _ := m.paneLayout()
+	boundaryY := panes[0].editor.y1 - 1 // editor's own bottom border row
 
-	updated, _ := m.Update(press(40, terminalRect.y0))
+	updated, _ := m.Update(press(40, boundaryY))
 	m = updated.(Model)
 
 	// Drag far up: terminal would grow past what leaves the editor its
@@ -2360,5 +2362,140 @@ func TestQuitClosesEveryTerminalTabNotJustTheActiveOne(t *testing.T) {
 	// dialog-free quit path must reach tea.Quit for both tabs regardless.
 	if m.activeDialog != dialogNone {
 		t.Fatal("expected a clean quit (no dirty editor tabs) to not open a dialog")
+	}
+}
+
+func TestTerminalTabBarIsAlwaysShownEvenWithOneTab(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	if !strings.Contains(m.View(), "Shell 1") {
+		t.Fatal("expected the terminal tab bar to render \"Shell 1\" even with only one (unstarted) terminal tab")
+	}
+}
+
+func TestClickingATerminalTabSwitchesActiveTerminalAndFocusesThePane(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	m, _ = cmdNewTerminalTab(m) // now 2 tabs, activeTerminal=1
+	t.Cleanup(func() {
+		for i := range m.terminals {
+			m.terminals[i].term.Close()
+		}
+	})
+	m.focus = focusTree
+
+	_, _, term := m.paneLayout()
+	region, ok := terminalTabAt(0, m.terminals, term.tabBar.x1-term.tabBar.x0)
+	if !ok || region.tabIndex != 0 {
+		t.Fatalf("test setup: got region=%+v ok=%v, want tabIndex=0 at column 0", region, ok)
+	}
+	clickX := term.tabBar.x0
+	clickY := term.tabBar.y0
+
+	updated, _ = m.Update(tea.MouseMsg{X: clickX, Y: clickY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if m.activeTerminal != 0 {
+		t.Fatalf("got activeTerminal=%d after clicking tab 0, want 0", m.activeTerminal)
+	}
+	if m.focus != focusTerminal {
+		t.Fatal("expected clicking a terminal tab to focus the terminal pane")
+	}
+}
+
+func TestClickingATerminalTabsCloseGlyphRemovesItWithoutSwitchingFocus(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	m, _ = cmdNewTerminalTab(m) // 2 tabs, activeTerminal=1
+	t.Cleanup(func() {
+		for i := range m.terminals {
+			m.terminals[i].term.Close()
+		}
+	})
+	m.focus = focusTree
+
+	_, _, term := m.paneLayout()
+	regions := terminalTabRegions(m.terminals, term.tabBar.x1-term.tabBar.x0)
+	closeX := term.tabBar.x0 + regions[0].closeStart
+	closeY := term.tabBar.y0
+
+	updated, _ = m.Update(tea.MouseMsg{X: closeX, Y: closeY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = updated.(Model)
+
+	if len(m.terminals) != 1 {
+		t.Fatalf("got %d terminal tabs after closing tab 0's ×, want 1", len(m.terminals))
+	}
+	if m.focus != focusTree {
+		t.Fatal("expected closing a terminal tab (via its × ) to not change focus, matching the editor tab bar's own close-glyph precedent")
+	}
+}
+
+func TestResizeAllPanesReachesEveryTerminalTabWithoutDisturbingItsRunningState(t *testing.T) {
+	// terminal.Model exposes no getter for its stored width/height, and
+	// internal/app cannot reach into internal/terminal's unexported
+	// newPty/newEmulator test seams across the package boundary — so this
+	// spawns two real shells (matching this codebase's existing
+	// terminal-focused app tests, e.g. TestClickInTerminalPaneFocusesTerminal)
+	// and checks the one thing observable from here: a resize that reaches
+	// every tab (not just the active one, and not just index 0) must not
+	// panic, lose track of a tab, or disturb a background tab's running
+	// state — the same class of regression this codebase already fixed
+	// once for boundary-drag resizes not reaching every open editor tab.
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	m, _ = cmdNewTerminalTab(m) // tab 1 active
+
+	m.terminals[0].term, _ = m.terminals[0].term.Start() // background
+	m.terminals[1].term, _ = m.terminals[1].term.Start() // active
+
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 35})
+	m = updated.(Model)
+
+	if len(m.terminals) != 2 {
+		t.Fatalf("got %d terminal tabs after a resize, want 2 (none lost or duplicated)", len(m.terminals))
+	}
+	if !m.terminals[0].term.Started() || !m.terminals[1].term.Started() {
+		t.Fatal("expected both tabs to remain started after a resize reaches every tab")
+	}
+	t.Cleanup(func() {
+		m.terminals[0].term.Close()
+		m.terminals[1].term.Close()
+	})
+}
+
+func TestBeginResizeDragOnTheTerminalBoundaryStillWorksWithTheNewTabBarSubLayout(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	_, _, term := m.paneLayout()
+	m, ok := m.beginResizeDrag(m.treeWidth, term.tabBar.y0)
+	if !ok || m.resizeDrag != resizeTerminal {
+		t.Fatalf("got ok=%v resizeDrag=%v, want ok=true resizeDrag=resizeTerminal at the terminal tab bar's own top row", ok, m.resizeDrag)
 	}
 }
