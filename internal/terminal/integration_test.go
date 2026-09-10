@@ -58,7 +58,7 @@ func TestRealShellSpawnAndOutputRoundTrip(t *testing.T) {
 		t.Skip("spawns a real subprocess; skipped in -short mode")
 	}
 
-	m := New()
+	m := New(1)
 	m = m.SetSize(40, 10)
 	m, cmd := m.Start()
 	t.Cleanup(func() { _ = m.Close() })

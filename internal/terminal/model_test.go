@@ -89,7 +89,7 @@ func TestStartSpawnsOnlyOnce(t *testing.T) {
 	e := &fakeEmulator{}
 	withFakes(t, p, e)
 
-	m := New()
+	m := New(1)
 	spawns := 0
 	origPty := newPty
 	newPty = func(width, height int) (Pty, error) {
@@ -116,7 +116,7 @@ func TestStartSurfacesPtyCreationError(t *testing.T) {
 	}
 	t.Cleanup(func() { newPty = origPty })
 
-	m := New()
+	m := New(1)
 	m, _ = m.Start()
 
 	if got := m.View(); got != "Terminal error: terminal: boom" {
@@ -129,7 +129,7 @@ func TestStartSurfacesCommandStartError(t *testing.T) {
 	e := &fakeEmulator{}
 	withFakes(t, p, e)
 
-	m := New()
+	m := New(1)
 	m, _ = m.Start()
 
 	if got := m.View(); got != "Terminal error: terminal: no shell" {
@@ -142,7 +142,7 @@ func TestOutputMsgWritesIntoEmulatorAndReschedulesRead(t *testing.T) {
 	e := &fakeEmulator{}
 	withFakes(t, p, e)
 
-	m := New()
+	m := New(1)
 	m, cmd := m.Start()
 	if cmd == nil {
 		t.Fatal("expected a read command from Start")
@@ -168,7 +168,7 @@ func TestStaleOutputMsgFromOldGenerationIsIgnored(t *testing.T) {
 	e := &fakeEmulator{}
 	withFakes(t, p, e)
 
-	m := New()
+	m := New(1)
 	m, _ = m.Start()
 
 	stale := OutputMsg{data: []byte("old"), generation: m.generation - 1}
@@ -187,7 +187,7 @@ func TestKeyPressWritesEncodedBytesToPty(t *testing.T) {
 	e := &fakeEmulator{}
 	withFakes(t, p, e)
 
-	m := New()
+	m := New(1)
 	m, _ = m.Start()
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ls")})
@@ -198,7 +198,7 @@ func TestKeyPressWritesEncodedBytesToPty(t *testing.T) {
 }
 
 func TestKeyPressBeforeStartIsANoOp(t *testing.T) {
-	m := New()
+	m := New(1)
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	if cmd != nil {
 		t.Fatal("expected no command when the terminal was never started")
@@ -211,7 +211,7 @@ func TestSetSizeOnlyResizesWhenSizeActuallyChanges(t *testing.T) {
 	e := &fakeEmulator{}
 	withFakes(t, p, e)
 
-	m := New()
+	m := New(1)
 	m, _ = m.Start()
 	m = m.SetSize(80, 24)
 	m = m.SetSize(80, 24)
@@ -235,7 +235,7 @@ func TestCloseClosesThePty(t *testing.T) {
 	e := &fakeEmulator{}
 	withFakes(t, p, e)
 
-	m := New()
+	m := New(1)
 	m, _ = m.Start()
 
 	if err := m.Close(); err != nil {
@@ -247,14 +247,14 @@ func TestCloseClosesThePty(t *testing.T) {
 }
 
 func TestCloseBeforeStartIsANoOp(t *testing.T) {
-	m := New()
+	m := New(1)
 	if err := m.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 }
 
 func TestViewShowsTerminalNotStartedBeforeFirstFocus(t *testing.T) {
-	m := New()
+	m := New(1)
 	if got := m.View(); got != "Terminal not started" {
 		t.Fatalf("got %q", got)
 	}
@@ -273,7 +273,7 @@ func TestSetSizeClampsNegativeDimensionsToZero(t *testing.T) {
 	e := &fakeEmulator{}
 	withFakes(t, p, e)
 
-	m := New()
+	m := New(1)
 	m, _ = m.Start()
 	m = m.SetSize(-5, 23)
 
@@ -282,5 +282,76 @@ func TestSetSizeClampsNegativeDimensionsToZero(t *testing.T) {
 	}
 	if p.resizeW < 0 || p.resizeH < 0 {
 		t.Fatalf("got pty resize (%d, %d), want both clamped to >= 0", p.resizeW, p.resizeH)
+	}
+}
+
+func TestIDReturnsWhatNewWasConstructedWith(t *testing.T) {
+	m := New(7)
+	if got := m.ID(); got != 7 {
+		t.Fatalf("got ID()=%d, want 7", got)
+	}
+}
+
+func TestOutputMsgAndReadErrMsgEchoTheSessionID(t *testing.T) {
+	p := &fakePty{toRead: [][]byte{[]byte("hi")}}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(42)
+	m, cmd := m.Start()
+	if cmd == nil {
+		t.Fatal("test setup: Start() returned a nil cmd")
+	}
+	msg := cmd()
+	out, ok := msg.(OutputMsg)
+	if !ok {
+		t.Fatalf("test setup: got %T, want OutputMsg", msg)
+	}
+	if got := out.ID(); got != 42 {
+		t.Fatalf("got OutputMsg.ID()=%d, want 42", got)
+	}
+
+	// Drain the pty dry so the next read reports an error, producing a
+	// ReadErrMsg to check the same way.
+	m, cmd = m.Update(msg)
+	if cmd == nil {
+		t.Fatal("test setup: Update(OutputMsg) returned a nil cmd")
+	}
+	msg = cmd()
+	errMsg, ok := msg.(ReadErrMsg)
+	if !ok {
+		t.Fatalf("test setup: got %T, want ReadErrMsg", msg)
+	}
+	if got := errMsg.ID(); got != 42 {
+		t.Fatalf("got ReadErrMsg.ID()=%d, want 42", got)
+	}
+}
+
+func TestTwoSessionsIDsNeverCollideEvenThoughBothGenerationCountersStartAtZero(t *testing.T) {
+	p1 := &fakePty{toRead: [][]byte{[]byte("a")}}
+	e1 := &fakeEmulator{}
+	p2 := &fakePty{toRead: [][]byte{[]byte("b")}}
+	e2 := &fakeEmulator{}
+
+	origPty, origEmu := newPty, newEmulator
+	t.Cleanup(func() { newPty, newEmulator = origPty, origEmu })
+
+	newPty = func(width, height int) (Pty, error) { return p1, nil }
+	newEmulator = func(width, height int) Emulator { return e1 }
+	m1 := New(1)
+	m1, cmd1 := m1.Start()
+
+	newPty = func(width, height int) (Pty, error) { return p2, nil }
+	newEmulator = func(width, height int) Emulator { return e2 }
+	m2 := New(2)
+	m2, cmd2 := m2.Start()
+
+	out1 := cmd1().(OutputMsg)
+	out2 := cmd2().(OutputMsg)
+	if out1.ID() == out2.ID() {
+		t.Fatalf("got both sessions' OutputMsg.ID()=%d, want distinct ids (1 vs 2) even though both instances' internal generation counters started at the same value", out1.ID())
+	}
+	if out1.ID() != 1 || out2.ID() != 2 {
+		t.Fatalf("got ids (%d, %d), want (1, 2)", out1.ID(), out2.ID())
 	}
 }

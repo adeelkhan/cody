@@ -6,6 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"cody/internal/terminal"
 )
 
 // confirmAction identifies what an open dialogConfirmDiscard dialog is
@@ -98,6 +100,38 @@ func (m Model) removeTab(pane, index int) Model {
 	return m
 }
 
+// removeTerminalTab closes and removes the terminal tab at index,
+// reassigning m.activeTerminal the same way removeTab reassigns an
+// editorPane's activeTab (prefer the tab that shifted into the closed
+// slot, falling back to the tab before it if the closed tab was last).
+// Unlike an editorPane's tabs, this slice must never reach zero — the
+// terminal pane itself isn't closable — so closing the sole remaining tab
+// replaces it with one fresh, unstarted session in the same slot instead.
+// A no-op for an out-of-range index.
+func (m Model) removeTerminalTab(index int) Model {
+	if index < 0 || index >= len(m.terminals) {
+		return m
+	}
+	m.terminals[index].term.Close()
+	if len(m.terminals) == 1 {
+		m.nextTerminalID++
+		w, h := m.newTerminalSize()
+		m.terminals[0] = terminalTab{term: terminal.New(m.nextTerminalID).SetSize(w, h)}
+		m.activeTerminal = 0
+		return m
+	}
+	m.terminals = append(m.terminals[:index], m.terminals[index+1:]...)
+	switch {
+	case index < m.activeTerminal:
+		m.activeTerminal--
+	case index == m.activeTerminal:
+		if m.activeTerminal >= len(m.terminals) {
+			m.activeTerminal--
+		}
+	}
+	return m
+}
+
 func (m Model) updateConfirmDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -123,7 +157,9 @@ func (m Model) updateConfirmDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch action {
 		case confirmQuit:
-			m.terminal.Close()
+			for _, t := range m.terminals {
+				t.term.Close()
+			}
 			return m, tea.Quit
 		case confirmCloseTab:
 			m = m.removeTab(paneIdx, tabIdx)

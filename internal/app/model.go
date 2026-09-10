@@ -43,10 +43,12 @@ const (
 
 	// Pane-resize clamps: how small a dragged pane may shrink to, and how
 	// much room the pane on the other side of the drag must always keep.
-	minTreeWidth      = 15
-	minEditorWidth    = 20
-	minEditorHeight   = 3
-	minTerminalHeight = 3
+	minTreeWidth    = 15
+	minEditorWidth  = 20
+	minEditorHeight = 3
+	// minTerminalHeight = border(2) + the terminal's own tab bar row(1) +
+	// at least 1 visible content row.
+	minTerminalHeight = 4
 )
 
 var (
@@ -81,19 +83,40 @@ type editorPane struct {
 	activeTab int // -1 when this pane has no tabs open
 }
 
+// terminalTab is one terminal session: its own independent terminal.Model
+// (own pty, own vt.Emulator, own generation counter). Unlike an editor
+// tab, it carries no path/dirty state — a shell session has no "unsaved
+// changes" concept.
+type terminalTab struct {
+	term terminal.Model
+}
+
 type Model struct {
-	tree          filetree.Model
-	panes         []editorPane // len 1 (unsplit) or 2 (split); never 0
-	activePane    int          // which pane index keyboard/mouse edits target
-	terminal      terminal.Model
-	focus         focusArea
-	projectName   string
-	recentCommand string
-	width, height int
-	commands      []Command
-	rootPath      string
-	openMenu      string
-	tabMenu       *tabContextMenu // nil when no tab-menu is open
+	tree       filetree.Model
+	panes      []editorPane // len 1 (unsplit) or 2 (split); never 0
+	activePane int          // which pane index keyboard/mouse edits target
+	// terminals/activeTerminal mirror panes/activePane's own invariants:
+	// len(terminals) is never 0 — the terminal pane itself is not
+	// closable, so closing the sole remaining tab resets it in place
+	// rather than emptying the slice (see removeTerminalTab). activeTerminal
+	// indexes the tab currently shown/receiving keyboard input when
+	// focus == focusTerminal.
+	terminals      []terminalTab
+	activeTerminal int
+	// nextTerminalID is a monotonic counter handed to terminal.New as each
+	// new session's stable id (see that package's New doc comment) —
+	// never reused, so a message from a since-closed session can never be
+	// misrouted to whatever new session happens to occupy its old slice
+	// index.
+	nextTerminalID int
+	focus          focusArea
+	projectName    string
+	recentCommand  string
+	width, height  int
+	commands       []Command
+	rootPath       string
+	openMenu       string
+	tabMenu        *tabContextMenu // nil when no tab-menu is open
 
 	// treeWidth and terminalHeight are the tree and terminal panes' current
 	// on-screen sizes (border included) — mutable, unlike their
@@ -138,7 +161,7 @@ func New(rootPath string, nerdFont bool) (Model, error) {
 		tree:           tree,
 		panes:          []editorPane{{activeTab: -1}},
 		activePane:     0,
-		terminal:       terminal.New(),
+		terminals:      []terminalTab{{term: terminal.New(0)}},
 		focus:          focusTree,
 		projectName:    filepath.Base(absPath),
 		rootPath:       absPath,
@@ -230,6 +253,24 @@ func (m Model) newTabEditorSize() (width, height int) {
 		w = widths[m.activePane]
 	}
 	return max(0, w-borderSize), max(0, editorHeight-borderSize)
+}
+
+// newTerminalSize computes the width/height a new (or reset) terminal tab's
+// session should be sized at immediately on construction, mirroring
+// newTabEditorSize's own shape but for the terminal pane — it reuses the
+// exact same termW/termH formula resizeAllPanes already applies to every
+// existing terminal tab, so the two can never drift out of sync with each
+// other. Without this, a newly appended tab left at its zero default size
+// would still start (terminal.Model's own Start() falls back to a
+// hardcoded 80x24 whenever width/height are <= 0), just at the wrong size —
+// and since the *stored* size would stay 0, View()'s per-frame SetSize call
+// would see that stale 0 as "changed" on every single render, forever
+// re-issuing pty.Resize/emu.Resize for that tab.
+//
+// Floored at 0 for the same degenerate-window reason newTabEditorSize is:
+// see that method's own doc comment.
+func (m Model) newTerminalSize() (width, height int) {
+	return max(0, m.width-m.treeWidth-borderSize), max(0, m.terminalHeight-borderSize-tabBarHeight)
 }
 
 // openOrSwitch opens path in a new tab, or switches to its existing tab if
@@ -365,7 +406,10 @@ func (m Model) resizeAllPanes() Model {
 		}
 	}
 	termW := max(0, m.width-m.treeWidth-borderSize)
-	m.terminal = m.terminal.SetSize(termW, max(0, m.terminalHeight-borderSize))
+	termH := max(0, m.terminalHeight-borderSize-tabBarHeight)
+	for i := range m.terminals {
+		m.terminals[i].term = m.terminals[i].term.SetSize(termW, termH)
+	}
 	return m
 }
 
@@ -402,15 +446,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.setActiveEditor(e)
 		return m, cmd
 	}
-	if _, ok := msg.(terminal.OutputMsg); ok {
-		var cmd tea.Cmd
-		m.terminal, cmd = m.terminal.Update(msg)
-		return m, cmd
+	if out, ok := msg.(terminal.OutputMsg); ok {
+		for i := range m.terminals {
+			if m.terminals[i].term.ID() == out.ID() {
+				var cmd tea.Cmd
+				m.terminals[i].term, cmd = m.terminals[i].term.Update(msg)
+				return m, cmd
+			}
+		}
+		// No tab matches: it was already closed (removeTerminalTab calls
+		// Close(), which stops the read loop — but a read already in
+		// flight when that happened still completes and produces one more
+		// message). Nothing to route it to; drop it.
+		return m, nil
 	}
-	if _, ok := msg.(terminal.ReadErrMsg); ok {
-		var cmd tea.Cmd
-		m.terminal, cmd = m.terminal.Update(msg)
-		return m, cmd
+	if errMsg, ok := msg.(terminal.ReadErrMsg); ok {
+		for i := range m.terminals {
+			if m.terminals[i].term.ID() == errMsg.ID() {
+				var cmd tea.Cmd
+				m.terminals[i].term, cmd = m.terminals[i].term.Update(msg)
+				return m, cmd
+			}
+		}
+		return m, nil
 	}
 	if m.activeDialog != dialogNone {
 		// A left click anywhere while a modal dialog is open dismisses it,
@@ -456,6 +514,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseActionPress:
 			switch msg.Button {
 			case tea.MouseButtonLeft:
+				// The terminal's own tab bar occupies its own row, entirely
+				// separate from the editor's bottom border row that
+				// beginResizeDrag checks for the editor/terminal boundary.
+				// Any click landing anywhere in that tab-bar row — any
+				// column from treeWidth to width, whether on an actual tab
+				// or past the last one — is routed to handleClick here,
+				// which dispatches tab selection/close (or no-ops, past the
+				// last tab); it is checked first so a click on that real,
+				// always-at-least-one-tab content reaches tab
+				// selection/close instead of ever being tried against
+				// beginResizeDrag. The only row that still starts a
+				// terminal-height resize-drag is the editor's own bottom
+				// border (editorRect.y1-1 in beginResizeDrag) — see
+				// TestDraggingEditorTerminalBoundaryResizesTerminalHeight and
+				// TestBeginResizeDragNoLongerTreatsTheTerminalTabBarsOwnRowAsABoundary.
+				if _, _, term := m.paneLayout(); term.tabBar.contains(msg.X, msg.Y) {
+					return m.handleClick(msg.X, msg.Y)
+				}
 				if updated, handled := m.beginResizeDrag(msg.X, msg.Y); handled {
 					return updated, nil
 				}
@@ -473,10 +549,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "tab":
 			m.focusNext()
-			return m.maybeStartTerminal()
+			return m.maybeStartActiveTerminal()
 		case "shift+tab":
 			m.focusPrev()
-			return m.maybeStartTerminal()
+			return m.maybeStartActiveTerminal()
 		case "esc":
 			if m.tabMenu != nil {
 				m.tabMenu = nil
@@ -491,7 +567,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cmd, ok := commandForShortcut(m.commands, msg.String()); ok {
 					return cmd.Handler(m)
 				}
-			} else if msg.String() == "ctrl+o" || msg.String() == "ctrl+q" || msg.String() == "ctrl+n" {
+			} else if msg.String() == "ctrl+o" || msg.String() == "ctrl+q" || msg.String() == "ctrl+n" || msg.String() == "ctrl+t" {
 				if cmd, ok := commandForShortcut(m.commands, msg.String()); ok {
 					return cmd.Handler(m)
 				}
@@ -525,7 +601,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.setActiveEditor(e)
 		cmd = c
 	case focusTerminal:
-		m.terminal, cmd = m.terminal.Update(msg)
+		m.terminals[m.activeTerminal].term, cmd = m.terminals[m.activeTerminal].term.Update(msg)
 	}
 	return m, cmd
 }
@@ -608,13 +684,22 @@ type editorPaneLayout struct {
 	tabBar, editor rect
 }
 
+// terminalPaneLayout describes the terminal pane's own two rows: its tab
+// strip (always tabBarHeight tall — the terminal always has at least one
+// tab, so unlike editorPaneLayout.tabBar this is never a zero-height rect)
+// and the content rect below it where the active session actually renders.
+type terminalPaneLayout struct {
+	tabBar   rect
+	terminal rect
+}
+
 // paneLayout computes the on-screen rectangles (border included) of the
 // tree, every editor pane, and the terminal for the model's current size
 // and menu state. It mirrors the geometry View() renders so a mouse
 // event's (x, y) can be routed to whichever box contains it — it must be
 // kept in sync with View() if that layout ever changes. panes has one
 // entry per m.panes, in the same order (panes[0] on the left).
-func (m Model) paneLayout() (tree rect, panes []editorPaneLayout, terminalR rect) {
+func (m Model) paneLayout() (tree rect, panes []editorPaneLayout, term terminalPaneLayout) {
 	paneHeight := m.height - menuBarHeight - statusBarHeight
 	dropdownHeight := 0
 	if m.openMenu != "" {
@@ -653,7 +738,10 @@ func (m Model) paneLayout() (tree rect, panes []editorPaneLayout, terminalR rect
 		}
 	}
 
-	terminalR = rect{m.treeWidth, bodyTop + tabBarH + editorHeight, m.width, bodyTop + bodyHeight}
+	term = terminalPaneLayout{
+		tabBar:   rect{m.treeWidth, bodyTop + tabBarH + editorHeight, m.width, bodyTop + tabBarH + editorHeight + tabBarHeight},
+		terminal: rect{m.treeWidth, bodyTop + tabBarH + editorHeight + tabBarHeight, m.width, bodyTop + bodyHeight},
+	}
 	return
 }
 
@@ -696,7 +784,7 @@ func (m Model) tabMenuStartCol() (col int, ok bool) {
 // selection, editor cursor placement). A click inside no pane (e.g. on a
 // border, or before the first WindowSizeMsg) is a no-op.
 func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
-	treeRect, panes, terminalRect := m.paneLayout()
+	treeRect, panes, term := m.paneLayout()
 	if treeRect.contains(x, y) {
 		m.focus = focusTree
 		relY := y - treeRect.y0 - 1 // -1 excludes the top border
@@ -734,9 +822,33 @@ func (m Model) handlePaneClick(x, y int) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	}
-	if terminalRect.contains(x, y) {
+	if term.tabBar.contains(x, y) {
+		relX := x - term.tabBar.x0
+		region, ok := terminalTabAt(relX, m.terminals, term.tabBar.x1-term.tabBar.x0)
+		if !ok {
+			return m, nil
+		}
+		if relX >= region.closeStart && relX < region.closeEnd {
+			// Deliberately does NOT set m.focus/activeTerminal first —
+			// matches handlePaneClick's own precedent for the editor tab
+			// bar's close glyph just above: a close action on a tab
+			// shouldn't also redirect focus/active-selection as a side
+			// effect. It DOES start whichever tab ends up active afterward,
+			// though: maybeStartActiveTerminal no-ops unless
+			// m.focus == focusTerminal, so this can't redirect focus either
+			// — it only matters when the terminal pane was already
+			// focused, in which case the tab that ends up active there
+			// must actually be running, not silently swallowing keystrokes
+			// until some unrelated focus-change event happens to start it.
+			return m.removeTerminalTab(region.tabIndex).maybeStartActiveTerminal()
+		}
+		m.activeTerminal = region.tabIndex
 		m.focus = focusTerminal
-		return m.maybeStartTerminal()
+		return m.maybeStartActiveTerminal()
+	}
+	if term.terminal.contains(x, y) {
+		m.focus = focusTerminal
+		return m.maybeStartActiveTerminal()
 	}
 	return m, nil
 }
@@ -823,7 +935,7 @@ func (m Model) beginResizeDrag(x, y int) (Model, bool) {
 	if m.activeDialog != dialogNone || m.openMenu != "" || m.tabMenu != nil {
 		return m, false
 	}
-	treeRect, panes, terminalRect := m.paneLayout()
+	treeRect, panes, _ := m.paneLayout()
 	if x == treeRect.x1-1 && y >= treeRect.y0 && y < treeRect.y1 {
 		m.resizeDrag = resizeTree
 		return m, true
@@ -836,7 +948,7 @@ func (m Model) beginResizeDrag(x, y int) (Model, bool) {
 		}
 	}
 	editorRect := panes[0].editor
-	onHorizontalBoundary := y == editorRect.y1-1 || y == terminalRect.y0
+	onHorizontalBoundary := y == editorRect.y1-1
 	if onHorizontalBoundary && x >= treeRect.x1 && x < m.width {
 		m.resizeDrag = resizeTerminal
 		return m, true
@@ -859,8 +971,15 @@ func (m Model) applyResizeDrag(x, y int) Model {
 			m.splitCol = m.clampSplitCol(m.splitCol)
 		}
 	case resizeTerminal:
-		_, _, terminalRect := m.paneLayout()
-		m.terminalHeight = m.clampTerminalHeight(terminalRect.y1 - y)
+		_, _, term := m.paneLayout()
+		// -1: the drag's only live trigger row is editorRect.y1-1 (the
+		// editor's own bottom border, one row above term.tabBar.y0 — see
+		// beginResizeDrag), so term.terminal.y1-y alone would compute a
+		// height one row taller than m.terminalHeight actually is at that
+		// same start row, growing the terminal before the pointer has
+		// moved at all. The -1 cancels that anchor offset: pressing and
+		// releasing without moving leaves terminalHeight unchanged.
+		m.terminalHeight = m.clampTerminalHeight(term.terminal.y1 - y - 1)
 	case resizeEditorSplit:
 		m.splitCol = m.clampSplitCol(x)
 	}
@@ -956,14 +1075,17 @@ func (m *Model) focusPrev() {
 	}
 }
 
-// maybeStartTerminal lazily spawns the shell the first time the terminal
-// pane gains focus. A no-op on every subsequent focus change.
-func (m Model) maybeStartTerminal() (Model, tea.Cmd) {
+// maybeStartActiveTerminal lazily spawns the active terminal tab's shell
+// the first time it gets focus, if it isn't already started. Safe to call
+// unconditionally — a no-op when focus isn't on the terminal pane, or when
+// the active tab is already running (terminal.Model.Start's own no-op
+// guard).
+func (m Model) maybeStartActiveTerminal() (Model, tea.Cmd) {
 	if m.focus != focusTerminal {
 		return m, nil
 	}
 	var cmd tea.Cmd
-	m.terminal, cmd = m.terminal.Start()
+	m.terminals[m.activeTerminal].term, cmd = m.terminals[m.activeTerminal].term.Start()
 	return m, cmd
 }
 
@@ -1053,7 +1175,7 @@ func (m Model) View() string {
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(terminalBorderColor).
 		Width(m.width - m.treeWidth - borderSize).
-		Height(m.terminalHeight - borderSize)
+		Height(m.terminalHeight - borderSize - tabBarHeight)
 
 	// One width per pane: unsplit, a pane spans the full editor column
 	// (matching today's single editorStyle exactly); split, each spans
@@ -1092,8 +1214,8 @@ func (m Model) View() string {
 	// treats <= 0 as "don't touch it".
 	tree := m.tree.SetSize(max(0, m.treeWidth-borderSize), max(0, bodyHeight-borderSize)).SetDirty(dirty)
 	termWidth := m.width - m.treeWidth - borderSize
-	termHeight := m.terminalHeight - borderSize
-	term := m.terminal.SetSize(max(0, termWidth), max(0, termHeight))
+	termHeight := m.terminalHeight - borderSize - tabBarHeight
+	activeTerm := m.terminals[m.activeTerminal].term.SetSize(max(0, termWidth), max(0, termHeight))
 
 	var paneColumns []string
 	for i, p := range m.panes {
@@ -1115,7 +1237,8 @@ func (m Model) View() string {
 
 	right := lipgloss.JoinVertical(lipgloss.Left,
 		editorsRow,
-		terminalStyle.Render(clampBlockWidth(term.View(), termWidth)),
+		renderTerminalTabBar(m.width-m.treeWidth, m.terminals, m.activeTerminal),
+		terminalStyle.Render(clampBlockWidth(activeTerm.View(), termWidth)),
 	)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, treeStyle.Render(clampBlockWidth(tree.View(), m.treeWidth-borderSize)), right)
 

@@ -14,17 +14,33 @@ import (
 // internal/app can pass it through to Update unconditionally, the same
 // way it already does for editor.RehighlightMsg.
 type OutputMsg struct {
+	id         int
 	data       []byte
 	generation int
+}
+
+// ID returns the terminal.Model this message belongs to (see New's doc
+// comment) — a caller holding several sessions must check this before
+// routing the message into any one of them.
+func (m OutputMsg) ID() int {
+	return m.id
 }
 
 // ReadErrMsg signals the pty's read loop stopped (the shell exited, or
 // the pty was closed). Exported for the same reason as OutputMsg.
 type ReadErrMsg struct {
+	id         int
 	generation int
 }
 
+// ID returns the terminal.Model this message belongs to — see
+// OutputMsg.ID's doc comment.
+func (m ReadErrMsg) ID() int {
+	return m.id
+}
+
 type Model struct {
+	id            int // caller-assigned; stable for this Model's lifetime, echoed in OutputMsg/ReadErrMsg for multi-instance routing (see New's doc comment)
 	width, height int
 	pty           Pty
 	emu           Emulator
@@ -33,8 +49,20 @@ type Model struct {
 	generation    int
 }
 
-func New() Model {
-	return Model{}
+// New creates a terminal session identified by id — a value the caller
+// controls and can use to tell this session's OutputMsg/ReadErrMsg apart
+// from any other terminal.Model instance's. A per-instance generation
+// counter alone can't do this: it starts at 0 for every instance, so two
+// independently-created sessions' messages can carry the same generation
+// and be indistinguishable. id is otherwise opaque to this package — never
+// interpreted, only stored and echoed back.
+func New(id int) Model {
+	return Model{id: id}
+}
+
+// ID returns the identity this session was constructed with.
+func (m Model) ID() int {
+	return m.id
 }
 
 // SetSize resizes the pane. Resizing the underlying pty/emulator is a real
@@ -115,19 +143,19 @@ func (m Model) Start() (Model, tea.Cmd) {
 	m.pty = p
 	m.emu = newEmulator(w, h)
 	m.generation++
-	return m, readCmd(m.pty, m.generation)
+	return m, readCmd(m.pty, m.id, m.generation)
 }
 
-func readCmd(p Pty, generation int) tea.Cmd {
+func readCmd(p Pty, id, generation int) tea.Cmd {
 	return func() tea.Msg {
 		buf := make([]byte, 4096)
 		n, err := p.Read(buf)
 		if err != nil {
-			return ReadErrMsg{generation: generation}
+			return ReadErrMsg{id: id, generation: generation}
 		}
 		data := make([]byte, n)
 		copy(data, buf[:n])
-		return OutputMsg{data: data, generation: generation}
+		return OutputMsg{id: id, data: data, generation: generation}
 	}
 }
 
@@ -138,7 +166,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.emu.Write(msg.data)
-		return m, readCmd(m.pty, m.generation)
+		return m, readCmd(m.pty, m.id, m.generation)
 	case ReadErrMsg:
 		// The shell exited (or the pty closed). Stop reading; the last
 		// rendered frame stays visible. No restart in this phase (see
