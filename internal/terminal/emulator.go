@@ -31,6 +31,15 @@ type Emulator interface {
 	// must treat "alt screen active" as "no scrollback available" rather
 	// than blending the two.
 	IsAltScreen() bool
+	// CursorPosition returns the cursor's current (column, row), both
+	// 0-indexed. Exposed as plain ints rather than vt/uv's own Position
+	// type (a plain image.Point) for the same reason as
+	// ScrollbackLen/ScrollbackLine above — this package's own resize
+	// handling needs it to snapshot/restore the cursor around a
+	// width-shrinking resize (see SetSize's own doc comment): the
+	// library's Resize clamps the cursor's column into a narrower width
+	// and never restores it on a later grow.
+	CursorPosition() (x, y int)
 }
 
 // vtEmulator adapts *vt.Emulator to this package's narrower Emulator
@@ -50,6 +59,11 @@ func (e vtEmulator) ScrollbackLine(index int) string {
 		return ""
 	}
 	return line.Render()
+}
+
+func (e vtEmulator) CursorPosition() (x, y int) {
+	pos := e.Emulator.CursorPosition()
+	return pos.X, pos.Y
 }
 
 // newEmulator is a package-level var so tests can substitute a fake

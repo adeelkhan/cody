@@ -79,6 +79,9 @@ type fakeEmulator struct {
 	// enter/exit escape sequences arriving in that chunk), independent
 	// of whatever IsAltScreen() reported before that particular Write.
 	altScreenAfterWrite *bool
+	// cursorX/cursorY back CursorPosition — test-controlled, since the
+	// fake doesn't track real cursor movement the way the vt library does.
+	cursorX, cursorY int
 }
 
 func (f *fakeEmulator) Write(p []byte) (int, error) {
@@ -105,6 +108,10 @@ func (f *fakeEmulator) Resize(w, h int) {
 
 func (f *fakeEmulator) ScrollbackLen() int {
 	return len(f.sbLines)
+}
+
+func (f *fakeEmulator) CursorPosition() (x, y int) {
+	return f.cursorX, f.cursorY
 }
 
 func (f *fakeEmulator) ScrollbackLine(index int) string {
@@ -822,6 +829,136 @@ func TestSetSizePreservesRowsLostToARealEmulatorsHeightShrink(t *testing.T) {
 	allUp := m.ScrollLines(-10)
 	if view := allUp.View(); !strings.Contains(view, "line2") {
 		t.Fatalf("got View()=%q after scrolling all the way up post-shrink, want it to contain line2 (the oldest captured row)", view)
+	}
+}
+
+// TestSetSizeRestoresContentLostToARealEmulatorsWidthShrink covers a
+// different, user-reported real-terminal bug: dragging a real terminal
+// window's edge narrower then wider again (no output in between)
+// permanently chopped off the tail of already-printed lines, even after
+// growing back past their original width. Root cause, confirmed directly
+// in the vendored library source and empirically against real terminals
+// that don't have this problem (tmux, Ghostty itself): ultraviolet's
+// Buffer.Resize implements a width shrink as `Lines[i] = Lines[i][:width]`
+// for every row — permanently truncating anything past the new column
+// count, with no reflow (the library has no per-row soft-wrap tracking to
+// reflow from). SetSize now snapshots the live grid before a width
+// shrink and restores it if the pane widens back out far enough with no
+// output in between.
+func TestSetSizeRestoresContentLostToARealEmulatorsWidthShrink(t *testing.T) {
+	// Uses the REAL vt.Emulator (only newPty is faked, to avoid spawning
+	// a real shell) — a fake emulator doesn't reproduce the destructive
+	// width-truncation behavior this test guards against.
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 3)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	const line = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123" // 31 chars, fits at width 40 with no wrap
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte(line)})
+	m = updated
+
+	if !strings.Contains(m.View(), line) {
+		t.Fatalf("test setup: expected the live view to contain the full line before shrinking; got %q", m.View())
+	}
+
+	m = m.SetSize(10, 3) // shrink width 40 -> 10: the real library truncates the row to "ABCDEFGHIJ" here without the fix
+	if strings.Contains(m.View(), line) {
+		t.Fatalf("test setup: expected the shrink to actually truncate the line (proving the fix, not the library itself, is what's restoring it later); got %q", m.View())
+	}
+
+	m = m.SetSize(40, 3) // grow back to (at least) the pre-shrink width, no output in between — must restore losslessly
+
+	if !strings.Contains(m.View(), line) {
+		t.Fatalf("got View()=%q after growing back to the pre-shrink width, want the full original line restored, not left truncated", m.View())
+	}
+
+	if x, y := m.emu.CursorPosition(); x != len(line) || y != 0 {
+		t.Fatalf("got cursor position (%d,%d) after the shrink/grow round trip, want (%d,0) — the library clamps the cursor's column on shrink and never restores it on its own, so restoreWidthShrink must reposition it explicitly", x, y, len(line))
+	}
+}
+
+// TestSetSizeWidthRestoreSkipsARowOverwrittenByNewOutput covers the
+// per-row consistency check explicitly: a row that real output has
+// overwritten since the shrink must not be clobbered by the stale
+// snapshot on a later regrowth, even though other, untouched rows still
+// restore normally (see the next test). This is the refined behavior —
+// an earlier version of this fix invalidated the ENTIRE snapshot the
+// moment ANY output arrived, but that turned out to almost never let the
+// rescue fire in practice: real interactive shells commonly redraw their
+// own prompt line in response to the very resize that shrank the pane
+// (confirmed against a real zsh session), which is ordinary output with
+// no way to distinguish it from anything else arriving here.
+func TestSetSizeWidthRestoreSkipsARowOverwrittenByNewOutput(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 3)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	const line = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte(line)})
+	m = updated
+
+	m = m.SetSize(10, 3) // shrink: snapshot captures the full 31-char line
+
+	// Real output overwrites row 0 itself (simulating a shell redrawing
+	// its own prompt on this exact row after the resize) with content
+	// that shares no prefix relationship with the original line.
+	updated, _ = m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("\rNEWCONTENT")})
+	m = updated
+
+	m = m.SetSize(40, 3) // grow back — must NOT replay the stale row over the new content
+
+	if strings.Contains(m.View(), line) {
+		t.Fatalf("got View()=%q after new output overwrote the row then growing back, want the stale snapshot NOT restored over it", m.View())
+	}
+	if !strings.Contains(m.View(), "NEWCONTENT") {
+		t.Fatalf("got View()=%q, want the genuinely newer NEWCONTENT left in place", m.View())
+	}
+}
+
+// TestSetSizeWidthRestoreStillRestoresRowsNewOutputDidNotTouch is the
+// other half of the per-row check: output landing on ONE row (e.g. a
+// shell's own prompt redraw) must not block restoring OTHER rows that
+// nothing wrote to.
+func TestSetSizeWidthRestoreStillRestoresRowsNewOutputDidNotTouch(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 3)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	const line0 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"
+	const line1 = "9876543210ZYXWVUTSRQPONMLKJIHGFEDCBA"
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte(line0 + "\r\n" + line1)})
+	m = updated
+
+	m = m.SetSize(10, 3) // shrink: snapshot captures both full lines
+
+	// New output arrives on row index 1 only (CUP to that row, then
+	// overwrite it) — row 0 is never touched. CUP's row parameter is
+	// 1-indexed, so "2" targets the second row (0-indexed row 1).
+	updated, _ = m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("\x1b[2;1HNEWROW1")})
+	m = updated
+
+	m = m.SetSize(40, 3) // grow back
+
+	if !strings.Contains(m.View(), line0) {
+		t.Fatalf("got View()=%q, want the untouched row 0 restored to its full original content", m.View())
+	}
+	if strings.Contains(m.View(), line1) {
+		t.Fatalf("got View()=%q, want row 1 NOT restored over the genuinely newer NEWROW1", m.View())
 	}
 }
 
