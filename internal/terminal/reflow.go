@@ -70,3 +70,55 @@ func rewrapLogicalLine(line string, newWidth int) []string {
 	}
 	return rows
 }
+
+// cursorOffset returns the display-column offset of the cursor at
+// (cursorRow, cursorCol) — both physical, 0-indexed — within its
+// logical line, given rows (the physical rows at the OLD width) and
+// physicalRowCounts (from groupIntoLogicalLines against those same
+// rows). logicalLineIndex is which of groupIntoLogicalLines' returned
+// lines the cursor falls in.
+func cursorOffset(rows []string, physicalRowCounts []int, cursorRow, cursorCol int) (logicalLineIndex, offset int) {
+	rowIdx := 0
+	for li, count := range physicalRowCounts {
+		if cursorRow < rowIdx+count {
+			within := cursorRow - rowIdx
+			off := 0
+			for k := 0; k < within; k++ {
+				off += ansi.StringWidth(rows[rowIdx+k])
+			}
+			return li, off + cursorCol
+		}
+		rowIdx += count
+	}
+	// cursorRow is beyond every known row — clamp to the end of the
+	// last logical line rather than panic; SetSize's own bounds should
+	// prevent this in practice, but this keeps the function total.
+	last := len(physicalRowCounts) - 1
+	if last < 0 {
+		return 0, 0
+	}
+	off := 0
+	for k := rowIdx - physicalRowCounts[last]; k < rowIdx; k++ {
+		off += ansi.StringWidth(rows[k])
+	}
+	return last, off
+}
+
+// cursorAfterRewrap returns the (row, col) — both 0-indexed — that
+// offset (from cursorOffset) lands at within newRows (the output of
+// rewrapLogicalLine for the SAME logical line the offset was computed
+// against).
+func cursorAfterRewrap(newRows []string, offset int) (row, col int) {
+	for i, r := range newRows {
+		w := ansi.StringWidth(r)
+		if offset <= w {
+			return i, offset
+		}
+		offset -= w
+	}
+	if len(newRows) == 0 {
+		return 0, 0
+	}
+	last := len(newRows) - 1
+	return last, ansi.StringWidth(newRows[last])
+}

@@ -130,3 +130,30 @@ func TestRewrapLogicalLineAtWidthOneWithWideCharacterDoesNotHang(t *testing.T) {
 		t.Fatal("rewrapLogicalLine hung — degenerate width guard is missing or broken")
 	}
 }
+
+func TestCursorOffsetWithinFirstPhysicalRow(t *testing.T) {
+	_, counts := groupIntoLogicalLines([]string{"short", "next"}, 10)
+	li, off := cursorOffset([]string{"short", "next"}, counts, 0, 3)
+	if li != 0 || off != 3 {
+		t.Fatalf("got (line=%d, offset=%d), want (0, 3)", li, off)
+	}
+}
+
+func TestCursorOffsetInSecondPhysicalRowOfAWrappedLine(t *testing.T) {
+	rows := []string{"1234567890", "abcde"}
+	_, counts := groupIntoLogicalLines(rows, 10)
+	li, off := cursorOffset(rows, counts, 1, 2)
+	// Row 0 contributes its full width (10) before row 1's own column
+	// (2) — offset is measured from the logical line's own start.
+	if li != 0 || off != 12 {
+		t.Fatalf("got (line=%d, offset=%d), want (0, 12)", li, off)
+	}
+}
+
+func TestCursorAfterRewrapLandsOnTheCorrectRowAndColumn(t *testing.T) {
+	newRows := []string{"ABCDEF", "GHIJKL"}
+	row, col := cursorAfterRewrap(newRows, 11)
+	if row != 1 || col != 5 {
+		t.Fatalf("got (row=%d, col=%d), want (1, 5) — offset 11 is 5 columns into the second row", row, col)
+	}
+}
