@@ -14,6 +14,14 @@ import (
 	"cody/internal/scrollbar"
 )
 
+// maxShrinkOverflow caps how many rows Model.shrinkOverflow will ever hold
+// — mirroring the real vt.Emulator's own 10,000-line scrollback cap (see
+// vt.DefaultScrollbackSize), so a long session across many shrink events
+// (e.g. several drags of the pane boundary) can't grow this unboundedly.
+// Oldest entries are dropped first, same eviction order as the library's
+// own scrollback.
+const maxShrinkOverflow = 10000
+
 // OutputMsg carries a chunk of bytes read from the pty. Exported so
 // internal/app can pass it through to Update unconditionally, the same
 // way it already does for editor.RehighlightMsg.
@@ -118,13 +126,34 @@ func (m Model) SetSize(width, height int) Model {
 		height = 0
 	}
 	changed := width != m.width || height != m.height
-	if changed && m.emu != nil && m.height > 0 && height < m.height {
-		discarded := m.height - height
+	if changed && m.emu != nil && m.height > 0 && height < m.height && !m.emu.IsAltScreen() {
+		// The library keeps Lines[:height] (the TOP height rows of the
+		// OLD grid) and discards the rest — so what we must capture is
+		// everything AFTER that same cutoff, liveLines[height:], not
+		// liveLines[:discarded]. Capturing the top instead (an earlier,
+		// wrong version of this fix) grabbed rows the library was never
+		// going to lose while the real victims — the rows nearest the
+		// cursor, typically including the shell prompt — stayed lost;
+		// caught by an independent review that verified the actual
+		// discard direction against the real library directly.
+		//
+		// Skipped entirely while the alt screen (vim, less, ...) is
+		// active: Render() would be showing that app's own UI, not shell
+		// history, and capturing it here would later surface as
+		// unrelated content blended into what's supposed to be
+		// main-screen scrollback.
 		liveLines := strings.Split(m.emu.Render(), "\n")
-		if discarded > len(liveLines) {
-			discarded = len(liveLines)
+		from := height
+		if from > len(liveLines) {
+			from = len(liveLines)
 		}
-		m.shrinkOverflow = append(m.shrinkOverflow, liveLines[:discarded]...)
+		if from < 0 {
+			from = 0
+		}
+		m.shrinkOverflow = append(m.shrinkOverflow, liveLines[from:]...)
+		if excess := len(m.shrinkOverflow) - maxShrinkOverflow; excess > 0 {
+			m.shrinkOverflow = m.shrinkOverflow[excess:]
+		}
 	}
 	m.width, m.height = width, height
 	if changed {

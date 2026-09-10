@@ -708,9 +708,15 @@ func TestSetSizeCapturesRowsAHeightShrinkWouldOtherwiseDiscard(t *testing.T) {
 
 	m = m.SetSize(20, 2) // shrink from 5 rows to 2
 
-	want := []string{"line0", "line1", "line2"}
+	// The library keeps Lines[:2] (line0, line1 — the TOP of the old
+	// grid) as the new live screen and discards the rest — so the rows
+	// that actually need capturing are line2/line3/line4, NOT line0/
+	// line1/line2 (an earlier, wrong version of this test/fix captured
+	// the top instead, verified against a live-writing example against
+	// the real library directly, not just reasoned about abstractly).
+	want := []string{"line2", "line3", "line4"}
 	if len(m.shrinkOverflow) != len(want) {
-		t.Fatalf("got shrinkOverflow=%q, want %q (the 3 rows a real emulator's Resize would otherwise silently drop)", m.shrinkOverflow, want)
+		t.Fatalf("got shrinkOverflow=%q, want %q (the rows a real emulator's Resize would otherwise silently drop — the ones nearest the cursor, not the ones it keeps)", m.shrinkOverflow, want)
 	}
 	for i, w := range want {
 		if m.shrinkOverflow[i] != w {
@@ -742,11 +748,85 @@ func TestSetSizePreservesRowsLostToARealEmulatorsHeightShrink(t *testing.T) {
 		t.Fatalf("test setup: expected the live view to show line4 before shrinking; got %q", m.View())
 	}
 
-	m = m.SetSize(20, 2) // shrink from 5 rows to 2 — the real library would destroy line0-line2 here without the fix
+	m = m.SetSize(20, 2) // shrink from 5 rows to 2 — the real library keeps line0/line1, destroys line2-line4 here without the fix
 
-	m = m.ScrollLines(-10) // scroll all the way up
-	view := m.View()
-	if !strings.Contains(view, "line0") {
-		t.Fatalf("got View()=%q after scrolling up post-shrink, want it to contain line0 (preserved via shrinkOverflow, not silently destroyed by the real emulator's own lossy resize)", view)
+	// The pane only shows 2 rows at once now, so line3 and line4 (2 apart
+	// in the combined buffer) can't both be on screen simultaneously —
+	// check each at the scroll position that actually reveals it, rather
+	// than asserting them together.
+	//
+	// line4 (the row nearest the cursor — the one the bug report is
+	// specifically about: a shell prompt, the tail of whatever was just
+	// catted) must be reachable by scrolling up just slightly.
+	oneUp := m.ScrollLines(-1)
+	if view := oneUp.View(); !strings.Contains(view, "line4") {
+		t.Fatalf("got View()=%q after scrolling up 1 line post-shrink, want it to contain line4 (the row nearest the cursor — preserved via shrinkOverflow, not silently destroyed by the real emulator's own lossy resize)", view)
+	}
+	// line2 (the OLDEST of the captured rows) must be reachable by
+	// scrolling all the way up, proving the full captured range survived,
+	// not just the row nearest the boundary. line0 is NOT a meaningful
+	// check here — the real library keeps it as part of the new live
+	// screen regardless of whether this fix works at all, so asserting on
+	// it alone (an earlier, wrong version of this test did) would pass
+	// even if the fix captured nothing real.
+	allUp := m.ScrollLines(-10)
+	if view := allUp.View(); !strings.Contains(view, "line2") {
+		t.Fatalf("got View()=%q after scrolling all the way up post-shrink, want it to contain line2 (the oldest captured row)", view)
+	}
+}
+
+func TestSetSizeShrinkCaptureIsSkippedDuringAltScreen(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{altScreen: true}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	e.written = []byte("vim-a\nvim-b\nvim-c\nvim-d\nvim-e")
+
+	m = m.SetSize(20, 2) // shrink while an alt-screen app is showing
+
+	if len(m.shrinkOverflow) != 0 {
+		t.Fatalf("got shrinkOverflow=%q after shrinking during the alt screen, want empty — capturing the alt-screen app's own UI here would surface as unrelated content blended into main-screen scrollback later", m.shrinkOverflow)
+	}
+}
+
+func TestSetSizeShrinkCaptureIsCappedLikeTheRealScrollbackBuffer(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 2)
+	m, _ = m.Start()
+
+	// Repeatedly grow to 3 rows (writing a fresh, distinguishable row
+	// each time) then shrink back to 2, so every cycle captures exactly
+	// one more row — enough cycles to push shrinkOverflow's length past
+	// maxShrinkOverflow if nothing caps it.
+	const cycles = maxShrinkOverflow + 5
+	for i := 0; i < cycles; i++ {
+		m = m.SetSize(20, 3)
+		e.written = []byte("a\nb\nrow")
+		m = m.SetSize(20, 2)
+	}
+
+	if len(m.shrinkOverflow) != maxShrinkOverflow {
+		t.Fatalf("got len(shrinkOverflow)=%d after %d shrink cycles, want it capped at maxShrinkOverflow=%d (mirroring the real emulator's own scrollback cap)", len(m.shrinkOverflow), cycles, maxShrinkOverflow)
+	}
+}
+
+func TestSetSizeDoesNotCaptureOnAWidthOnlyShrink(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	e.written = []byte("line0\nline1\nline2\nline3\nline4")
+
+	m = m.SetSize(10, 5) // width shrinks, height unchanged
+
+	if len(m.shrinkOverflow) != 0 {
+		t.Fatalf("got shrinkOverflow=%q after a width-only shrink, want empty — only a HEIGHT shrink discards rows in the real emulator", m.shrinkOverflow)
 	}
 }
