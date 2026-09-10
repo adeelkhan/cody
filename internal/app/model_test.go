@@ -694,6 +694,80 @@ func TestTerminalPaneShowsRealShellOutputThroughTheComposedApp(t *testing.T) {
 	}
 }
 
+func TestWheelOverTerminalPaneScrollsIntoRealScrollback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real subprocess; skipped in -short mode")
+	}
+	dir := t.TempDir()
+	m, err := New(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.terminals[m.activeTerminal].term.Close() })
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // tree -> editor
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab}) // editor -> terminal
+	m = updated.(Model)
+
+	msg := cmd()
+	out, ok := msg.(terminal.OutputMsg)
+	if !ok {
+		t.Fatalf("got %T as the first message, want terminal.OutputMsg (the shell prompt)", msg)
+	}
+	updated, cmd = m.Update(out)
+	m = updated.(Model)
+
+	// Produce more output lines than the terminal pane's own content
+	// height (interior height = terminalHeight(8) - border(2) -
+	// tabBarHeight(1) = 5 rows) — enough that the earliest line
+	// ("scrollback-row-1") is no longer visible in the live view at all,
+	// only reachable by scrolling.
+	command := "for i in 1 2 3 4 5 6 7 8 9 10; do echo scrollback-row-$i; done"
+	for _, r := range command {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if cmd == nil {
+			t.Fatalf("read loop stopped before scrollback-row-10 appeared; last view:\n%s", m.View())
+		}
+		msg := cmd()
+		out, ok := msg.(terminal.OutputMsg)
+		if !ok {
+			t.Fatalf("got %T, want terminal.OutputMsg", msg)
+		}
+		updated, cmd = m.Update(out)
+		m = updated.(Model)
+		if strings.Contains(m.View(), "scrollback-row-10") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for scrollback-row-10 through the composed app view; last view:\n%s", m.View())
+		}
+	}
+
+	if strings.Contains(m.View(), "scrollback-row-1\n") || strings.Contains(m.View(), "scrollback-row-1 ") {
+		t.Fatalf("test setup: expected scrollback-row-1 to have already scrolled out of the live view before scrolling; view:\n%s", m.View())
+	}
+
+	_, _, term := m.paneLayout()
+	x, y := term.terminal.x0+2, term.terminal.y0+1
+	for i := 0; i < 10; i++ {
+		updated, _ = m.Update(tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+		m = updated.(Model)
+	}
+
+	if !strings.Contains(m.View(), "scrollback-row-1") {
+		t.Fatalf("expected scrolling the wheel over the terminal pane to reveal scrollback-row-1, want it visible; view:\n%s", m.View())
+	}
+}
+
 func TestSearchingAndCyclingMatchesThroughTheComposedApp(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "main.go")

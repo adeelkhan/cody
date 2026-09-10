@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,10 +58,26 @@ type fakeEmulator struct {
 	written []byte
 	w, h    int
 	resizes int
+	// sbLines is test-controlled scrollback content, oldest first —
+	// independent of written/Write, since real scrollback population is
+	// the vt library's own internal concern (see Scrollback in
+	// charmbracelet/x/vt), not something this package's Write forwards to
+	// in the fake.
+	sbLines []string
+	// pushOnWrite, if set, is appended to sbLines the next time Write is
+	// called (then cleared) — simulates a real Write pushing new lines
+	// into scrollback as a side effect, so a test can control exactly
+	// when that growth is observed relative to Update's own
+	// before/after ScrollbackLen() measurement.
+	pushOnWrite []string
 }
 
 func (f *fakeEmulator) Write(p []byte) (int, error) {
 	f.written = append(f.written, p...)
+	if len(f.pushOnWrite) > 0 {
+		f.sbLines = append(f.sbLines, f.pushOnWrite...)
+		f.pushOnWrite = nil
+	}
 	return len(p), nil
 }
 
@@ -71,6 +88,17 @@ func (f *fakeEmulator) Render() string {
 func (f *fakeEmulator) Resize(w, h int) {
 	f.w, f.h = w, h
 	f.resizes++
+}
+
+func (f *fakeEmulator) ScrollbackLen() int {
+	return len(f.sbLines)
+}
+
+func (f *fakeEmulator) ScrollbackLine(index int) string {
+	if index < 0 || index >= len(f.sbLines) {
+		return ""
+	}
+	return f.sbLines[index]
 }
 
 func withFakes(t *testing.T, p *fakePty, e *fakeEmulator) {
@@ -353,5 +381,120 @@ func TestTwoSessionsIDsNeverCollideEvenThoughBothGenerationCountersStartAtZero(t
 	}
 	if out1.ID() != 1 || out2.ID() != 2 {
 		t.Fatalf("got ids (%d, %d), want (1, 2)", out1.ID(), out2.ID())
+	}
+}
+
+func TestScrollLinesClampsToZeroAndToScrollbackLength(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"a", "b", "c"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+
+	m = m.ScrollLines(1) // positive n scrolls down; already at the bottom
+	if m.scrollOffset != 0 {
+		t.Fatalf("got scrollOffset=%d after scrolling down from the bottom, want 0 (can't scroll past following live output)", m.scrollOffset)
+	}
+
+	m = m.ScrollLines(-100) // scroll way up, past all available scrollback
+	if m.scrollOffset != 3 {
+		t.Fatalf("got scrollOffset=%d after scrolling far past available scrollback, want 3 (clamped to ScrollbackLen())", m.scrollOffset)
+	}
+}
+
+func TestViewAtZeroOffsetIsUnchangedFromPriorBehavior(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+
+	if got, want := m.View(), "live0\nlive1\nlive2"; got != want {
+		t.Fatalf("got View()=%q at scrollOffset=0, want %q — exactly Render()'s own output, unchanged from before scrollback existed (no scrollbar overlay while following)", got, want)
+	}
+}
+
+func TestViewWhenScrolledUpShowsScrollbackContentAndDropsOldestLiveLine(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2", "old3", "old4"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 3)
+	m, _ = m.Start()
+	e.written = []byte("live0\nlive1\nlive2")
+
+	m = m.ScrollLines(-1) // scroll up by 1 line
+
+	view := m.View()
+	if !strings.Contains(view, "old4") {
+		t.Fatalf("expected the scrolled view to show old4 (the newest scrollback line), got %q", view)
+	}
+	if !strings.Contains(view, "live0") || !strings.Contains(view, "live1") {
+		t.Fatalf("expected the scrolled view to still show live0 and live1, got %q", view)
+	}
+	if strings.Contains(view, "live2") {
+		t.Fatalf("expected the scrolled view to have dropped live2 (the newest live line) off the bottom, got %q", view)
+	}
+	if got := strings.Count(view, "\n"); got != 2 {
+		t.Fatalf("got %d newlines in the scrolled view, want 2 (3 rows)", got)
+	}
+}
+
+func TestKeyPressResumesFollowingAfterScrollingUp(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+	m = m.ScrollLines(-1)
+	if m.scrollOffset == 0 {
+		t.Fatal("test setup: expected scrollOffset > 0 after scrolling up")
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m = updated
+
+	if m.scrollOffset != 0 {
+		t.Fatalf("got scrollOffset=%d after a keypress, want 0 (any input resumes following live output)", m.scrollOffset)
+	}
+}
+
+func TestOutputReceivedWhilePausedKeepsViewedWindowPinned(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{sbLines: []string{"old0", "old1", "old2"}, pushOnWrite: []string{"old3", "old4"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+	m = m.ScrollLines(-1)
+	if m.scrollOffset != 1 {
+		t.Fatalf("test setup: got scrollOffset=%d, want 1", m.scrollOffset)
+	}
+
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("more")})
+	m = updated
+
+	if m.scrollOffset != 3 {
+		t.Fatalf("got scrollOffset=%d after 2 new scrollback lines arrived while paused, want 3 (1 + 2 — the viewed window stays pinned to the same absolute content as new output pushes the live bottom down)", m.scrollOffset)
+	}
+}
+
+func TestOutputReceivedWhileFollowingStaysAtOffsetZero(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{pushOnWrite: []string{"old0", "old1"}}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(10, 3)
+	m, _ = m.Start()
+
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("more")})
+	m = updated
+
+	if m.scrollOffset != 0 {
+		t.Fatalf("got scrollOffset=%d after output arrived while following, want 0 (nothing to pin — the live view keeps following automatically)", m.scrollOffset)
 	}
 }

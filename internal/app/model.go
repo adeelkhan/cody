@@ -890,7 +890,7 @@ func (m Model) handleWheel(x, y, delta int) (tea.Model, tea.Cmd) {
 	if m.activeDialog != dialogNone || m.openMenu != "" {
 		return m, nil
 	}
-	treeRect, panes, _ := m.paneLayout()
+	treeRect, panes, term := m.paneLayout()
 	if treeRect.contains(x, y) {
 		m.tree = m.tree.Scroll(delta)
 		return m, nil
@@ -919,6 +919,14 @@ func (m Model) handleWheel(x, y, delta int) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+	}
+	if term.terminal.contains(x, y) {
+		// The terminal pane only ever shows its active tab, unlike a
+		// split editor pane — there's no "other tab visible under the
+		// pointer" case to handle here, matching editor's own
+		// activePane/pi split above.
+		m.terminals[m.activeTerminal].term = m.terminals[m.activeTerminal].term.ScrollLines(delta)
+		return m, nil
 	}
 	return m, nil
 }
