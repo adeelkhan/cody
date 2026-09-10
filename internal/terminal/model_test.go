@@ -678,3 +678,75 @@ func TestRenderScrolledViewAtWidthOneShowsOnlyTheScrollbarCell(t *testing.T) {
 		}
 	}
 }
+
+// TestSetSizeCapturesRowsAHeightShrinkWouldOtherwiseDiscard and
+// TestSetSizePreservesRowsLostToARealEmulatorsHeightShrink cover a real,
+// user-reported bug: cat a big file, then shrink the terminal pane (drag
+// the boundary, or resize the whole window), and the live content —
+// including the shell prompt — visibly vanished instead of scrolling into
+// history.
+//
+// Root cause, confirmed directly in the vendored library source
+// (charmbracelet/x/ultraviolet's Buffer.Resize): a height shrink is
+// implemented as `b.Lines = b.Lines[:height]` — keeping the grid's TOP
+// rows and discarding everything below, with no scrollback push at all.
+// Since the cursor (and therefore the most recently written content, like
+// a shell prompt) sits near the BOTTOM of the grid, this is exactly
+// backwards: SetSize now captures the rows about to be destroyed itself,
+// oldest-first, into m.shrinkOverflow — an older-than-scrollback tier
+// renderScrolledView already knows how to render — before delegating to
+// the library's own (lossy) resize.
+
+func TestSetSizeCapturesRowsAHeightShrinkWouldOtherwiseDiscard(t *testing.T) {
+	p := &fakePty{}
+	e := &fakeEmulator{}
+	withFakes(t, p, e)
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	e.written = []byte("line0\nline1\nline2\nline3\nline4")
+
+	m = m.SetSize(20, 2) // shrink from 5 rows to 2
+
+	want := []string{"line0", "line1", "line2"}
+	if len(m.shrinkOverflow) != len(want) {
+		t.Fatalf("got shrinkOverflow=%q, want %q (the 3 rows a real emulator's Resize would otherwise silently drop)", m.shrinkOverflow, want)
+	}
+	for i, w := range want {
+		if m.shrinkOverflow[i] != w {
+			t.Fatalf("got shrinkOverflow[%d]=%q, want %q", i, m.shrinkOverflow[i], w)
+		}
+	}
+}
+
+func TestSetSizePreservesRowsLostToARealEmulatorsHeightShrink(t *testing.T) {
+	// Uses the REAL vt.Emulator (only newPty is faked, to avoid spawning
+	// a real shell) — a fake emulator doesn't reproduce the destructive
+	// resize behavior this test exists to guard against, so verifying
+	// against the fake wouldn't prove anything about the actual bug.
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(20, 5)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	// Write 5 lines directly through Update — no read loop needed, this
+	// just exercises the same m.emu.Write path a real OutputMsg would.
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("line0\r\nline1\r\nline2\r\nline3\r\nline4")})
+	m = updated
+
+	if !strings.Contains(m.View(), "line4") {
+		t.Fatalf("test setup: expected the live view to show line4 before shrinking; got %q", m.View())
+	}
+
+	m = m.SetSize(20, 2) // shrink from 5 rows to 2 — the real library would destroy line0-line2 here without the fix
+
+	m = m.ScrollLines(-10) // scroll all the way up
+	view := m.View()
+	if !strings.Contains(view, "line0") {
+		t.Fatalf("got View()=%q after scrolling up post-shrink, want it to contain line0 (preserved via shrinkOverflow, not silently destroyed by the real emulator's own lossy resize)", view)
+	}
+}

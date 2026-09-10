@@ -59,6 +59,12 @@ type Model struct {
 	// there is no cursor here for it to track — scrolling the terminal
 	// never moves anything the shell itself is doing, only the viewport.
 	scrollOffset int
+	// shrinkOverflow holds rows a height-shrinking SetSize captured
+	// before they would otherwise have been silently destroyed by the
+	// underlying emulator's own resize (see SetSize's doc comment) —
+	// oldest first, rendered as a tier even older than m.emu's own
+	// scrollback (see renderScrolledView, ScrollLines).
+	shrinkOverflow []string
 }
 
 // New creates a terminal session identified by id — a value the caller
@@ -90,6 +96,20 @@ func (m Model) ID() int {
 // degrading gracefully — this package can't rely on every caller getting
 // the arithmetic right upstream, the same way editor/filetree already
 // floor their own content width before using it.
+//
+// A height SHRINK gets one more step first: the real vt.Emulator's own
+// Resize (charmbracelet/x/vt's Screen.Resize, delegating to
+// ultraviolet's Buffer.Resize) implements a shrink as `Lines =
+// Lines[:height]` — keeping the grid's TOP rows and silently discarding
+// everything below, with no scrollback push of its own. Since the
+// cursor (and therefore the most recently written content — a shell
+// prompt, the tail of whatever was just catted) sits near the BOTTOM of
+// the grid, that's exactly backwards for a shrinking terminal. Capture
+// the rows about to be destroyed ourselves, oldest first, into
+// shrinkOverflow (an older-than-scrollback tier renderScrolledView
+// already knows how to render) before delegating to the library's own
+// resize — confirmed against the real library, not just reasoned about
+// abstractly (see TestSetSizePreservesRowsLostToARealEmulatorsHeightShrink).
 func (m Model) SetSize(width, height int) Model {
 	if width < 0 {
 		width = 0
@@ -98,6 +118,14 @@ func (m Model) SetSize(width, height int) Model {
 		height = 0
 	}
 	changed := width != m.width || height != m.height
+	if changed && m.emu != nil && m.height > 0 && height < m.height {
+		discarded := m.height - height
+		liveLines := strings.Split(m.emu.Render(), "\n")
+		if discarded > len(liveLines) {
+			discarded = len(liveLines)
+		}
+		m.shrinkOverflow = append(m.shrinkOverflow, liveLines[:discarded]...)
+	}
 	m.width, m.height = width, height
 	if changed {
 		if m.pty != nil {
@@ -132,7 +160,7 @@ func (m Model) ScrollLines(n int) Model {
 		return m
 	}
 	m.scrollOffset -= n
-	if maxOffset := m.emu.ScrollbackLen(); m.scrollOffset > maxOffset {
+	if maxOffset := m.emu.ScrollbackLen() + len(m.shrinkOverflow); m.scrollOffset > maxOffset {
 		m.scrollOffset = maxOffset
 	}
 	if m.scrollOffset < 0 {
@@ -297,19 +325,22 @@ var scrollbarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 //
 // The vt library's Render() only ever renders the live screen — there is
 // no "render at an offset" parameter — so a paused/scrolled view is built
-// by hand: scrollback lines (oldest first, via ScrollbackLen/
-// ScrollbackLine) followed by the live screen's own rows, treated as one
-// combined, chronologically-ordered list. The live screen's individual
-// rows come from splitting Render()'s own output on "\n" — safe because
-// ANSI SGR/CSI escape sequences never contain a raw newline byte.
+// by hand from three chronologically-ordered tiers, oldest first:
+// m.shrinkOverflow (rows a height shrink would otherwise have destroyed —
+// see SetSize), the emulator's own scrollback (ScrollbackLen/
+// ScrollbackLine), then the live screen's own rows. The live screen's
+// individual rows come from splitting Render()'s own output on "\n" —
+// safe because ANSI SGR/CSI escape sequences never contain a raw newline
+// byte.
 func (m Model) renderScrolledView() string {
 	liveLines := strings.Split(m.emu.Render(), "\n")
+	overflowLen := len(m.shrinkOverflow)
 	sbLen := m.emu.ScrollbackLen()
 	height := m.height
 	if height <= 0 || height > len(liveLines) {
 		height = len(liveLines)
 	}
-	total := sbLen + height
+	total := overflowLen + sbLen + height
 	start := total - height - m.scrollOffset
 	if start < 0 {
 		start = 0
@@ -321,10 +352,12 @@ func (m Model) renderScrolledView() string {
 		i := start + row
 		var line string
 		switch {
-		case i < sbLen:
-			line = m.emu.ScrollbackLine(i)
-		case i-sbLen < len(liveLines):
-			line = liveLines[i-sbLen]
+		case i < overflowLen:
+			line = m.shrinkOverflow[i]
+		case i-overflowLen < sbLen:
+			line = m.emu.ScrollbackLine(i - overflowLen)
+		case i-overflowLen-sbLen < len(liveLines):
+			line = liveLines[i-overflowLen-sbLen]
 		}
 		var barRune rune
 		if row < len(bar) {
