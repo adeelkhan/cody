@@ -724,10 +724,17 @@ func TestRenderScrolledViewAtWidthTwoDoesNotExceedPaneWidth(t *testing.T) {
 // rows and discarding everything below, with no scrollback push at all.
 // Since the cursor (and therefore the most recently written content, like
 // a shell prompt) sits near the BOTTOM of the grid, this is exactly
-// backwards: SetSize now captures the rows about to be destroyed itself,
-// oldest-first, into m.shrinkOverflow — an older-than-scrollback tier
-// renderScrolledView already knows how to render — before delegating to
-// the library's own (lossy) resize.
+// backwards.
+//
+// SetSize's unified resize computation corrects it by re-deriving the
+// whole grid itself and writing the result back afterward
+// (writeReflowedRows), which overwrites whatever the library's own
+// resize did — so the library's "keep the top" behavior no longer
+// constrains anything. The direction is the one a real terminal uses:
+// the NEWEST rows (including the cursor's, e.g. the shell prompt) stay
+// live, and the OLDEST rows that no longer fit are evicted oldest-first
+// into m.shrinkOverflow — a tier between the real scrollback and the
+// live screen that renderScrolledView already knows how to render.
 
 func TestSetSizeCapturesRowsAHeightShrinkWouldOtherwiseDiscard(t *testing.T) {
 	p := &fakePty{}
@@ -740,20 +747,28 @@ func TestSetSizeCapturesRowsAHeightShrinkWouldOtherwiseDiscard(t *testing.T) {
 
 	m = m.SetSize(20, 2) // shrink from 5 rows to 2
 
-	// The library keeps Lines[:2] (line0, line1 — the TOP of the old
-	// grid) as the new live screen and discards the rest — so the rows
-	// that actually need capturing are line2/line3/line4, NOT line0/
-	// line1/line2 (an earlier, wrong version of this test/fix captured
-	// the top instead, verified against a live-writing example against
-	// the real library directly, not just reasoned about abstractly).
-	want := []string{"line2", "line3", "line4"}
+	// The unified resize computation always evicts the OLDEST rows and
+	// keeps the NEWEST live, independent of whatever the library's own
+	// resize does to cell content — writeReflowedRows overwrites the
+	// grid afterward regardless, so the library's "keep Lines[:2]"
+	// behavior no longer constrains which end we evict.
+	//
+	// The NEW direction keeps the newest rows (line3, line4 — nearest
+	// the cursor) live, evicting the OLDEST (line0-line2) to
+	// shrinkOverflow — the corrected behavior: a real terminal scrolls
+	// old content into history and keeps your current prompt visible,
+	// not the other way around.
+	want := []string{"line0", "line1", "line2"}
 	if len(m.shrinkOverflow) != len(want) {
-		t.Fatalf("got shrinkOverflow=%q, want %q (the rows a real emulator's Resize would otherwise silently drop — the ones nearest the cursor, not the ones it keeps)", m.shrinkOverflow, want)
+		t.Fatalf("got shrinkOverflow=%q, want %q (the oldest rows, evicted to make room for the newest ones to stay live)", m.shrinkOverflow, want)
 	}
 	for i, w := range want {
 		if m.shrinkOverflow[i] != w {
 			t.Fatalf("got shrinkOverflow[%d]=%q, want %q", i, m.shrinkOverflow[i], w)
 		}
+	}
+	if got := e.Render(); !strings.Contains(got, "line3") || !strings.Contains(got, "line4") {
+		t.Fatalf("got live Render()=%q, want it to show line3 and line4 (the newest rows, kept live)", got)
 	}
 }
 
@@ -777,9 +792,13 @@ func TestSetSizeTrimsTrailingBlankPaddingFromShrinkCapture(t *testing.T) {
 
 	m = m.SetSize(20, 2) // shrink from 5 rows to 2: discards rows 2-4
 
-	want := []string{"line2"}
+	// oldRows trims down to ["line0","line1","line2"] (cursor is on
+	// row2; rows 3-4 are blank padding). Shrinking 3 rows to height 2
+	// evicts the oldest 1 ("line0"), keeping the newest 2 ("line1",
+	// "line2") live.
+	want := []string{"line0"}
 	if len(m.shrinkOverflow) != len(want) || m.shrinkOverflow[0] != want[0] {
-		t.Fatalf("got shrinkOverflow=%q, want %q (trailing blank padding rows trimmed, real content kept)", m.shrinkOverflow, want)
+		t.Fatalf("got shrinkOverflow=%q, want %q (blank padding trimmed before eviction, and only the oldest meaningful row evicted)", m.shrinkOverflow, want)
 	}
 }
 
@@ -806,30 +825,27 @@ func TestSetSizePreservesRowsLostToARealEmulatorsHeightShrink(t *testing.T) {
 		t.Fatalf("test setup: expected the live view to show line4 before shrinking; got %q", m.View())
 	}
 
-	m = m.SetSize(20, 2) // shrink from 5 rows to 2 — the real library keeps line0/line1, destroys line2-line4 here without the fix
+	m = m.SetSize(20, 2) // shrink from 5 rows to 2
 
-	// The pane only shows 2 rows at once now, so line3 and line4 (2 apart
-	// in the combined buffer) can't both be on screen simultaneously —
-	// check each at the scroll position that actually reveals it, rather
-	// than asserting them together.
-	//
-	// line4 (the row nearest the cursor — the one the bug report is
-	// specifically about: a shell prompt, the tail of whatever was just
-	// catted) must be reachable by scrolling up just slightly.
-	oneUp := m.ScrollLines(-1)
-	if view := oneUp.View(); !strings.Contains(view, "line4") {
-		t.Fatalf("got View()=%q after scrolling up 1 line post-shrink, want it to contain line4 (the row nearest the cursor — preserved via shrinkOverflow, not silently destroyed by the real emulator's own lossy resize)", view)
+	// The NEW direction keeps the newest rows (line3, line4 — nearest
+	// the cursor, e.g. a shell prompt) live with no scrolling needed at
+	// all — this is the actual fix: the prompt never disappears.
+	if view := m.View(); !strings.Contains(view, "line3") || !strings.Contains(view, "line4") {
+		t.Fatalf("got View()=%q immediately after shrinking, want it to show line3 and line4 live — the newest rows must stay visible without any scrolling", view)
 	}
-	// line2 (the OLDEST of the captured rows) must be reachable by
-	// scrolling all the way up, proving the full captured range survived,
-	// not just the row nearest the boundary. line0 is NOT a meaningful
-	// check here — the real library keeps it as part of the new live
-	// screen regardless of whether this fix works at all, so asserting on
-	// it alone (an earlier, wrong version of this test did) would pass
-	// even if the fix captured nothing real.
+
+	// line2 (the newest of the EVICTED rows) must be reachable by
+	// scrolling up just slightly — it's the row immediately behind the
+	// live view.
+	oneUp := m.ScrollLines(-1)
+	if view := oneUp.View(); !strings.Contains(view, "line2") {
+		t.Fatalf("got View()=%q after scrolling up 1 line post-shrink, want it to contain line2 (the newest evicted row, immediately behind the live view)", view)
+	}
+	// line0 (the OLDEST evicted row) must be reachable by scrolling all
+	// the way up, proving the full evicted range survived.
 	allUp := m.ScrollLines(-10)
-	if view := allUp.View(); !strings.Contains(view, "line2") {
-		t.Fatalf("got View()=%q after scrolling all the way up post-shrink, want it to contain line2 (the oldest captured row)", view)
+	if view := allUp.View(); !strings.Contains(view, "line0") {
+		t.Fatalf("got View()=%q after scrolling all the way up post-shrink, want it to contain line0 (the oldest evicted row)", view)
 	}
 }
 
@@ -894,12 +910,14 @@ func TestSetSizeDoesNotCaptureOnAWidthOnlyShrink(t *testing.T) {
 // terminal emulator): dragging a real window's edge delivers MANY small,
 // separate resize events as the OS reports each intermediate size — not
 // one big jump the way tmux's `resize-window` (used to verify this
-// feature originally) does. Each of those calls captures the row nearest
-// the cursor first, then the next-nearest, and so on — the exact REVERSE
-// of chronological order — so appending each capture to shrinkOverflow's
-// end (rather than prepending while shrinkContinuing) came out backwards
-// after a multi-step shrink even though a single-step shrink of the same
-// total size was correct.
+// feature originally) does. An earlier, gesture-tracking version of this
+// code ordered each step's captured rows relative to the previous step's,
+// which came out backwards after a multi-step shrink even though a
+// single-step shrink of the same total size was correct. SetSize's
+// unified computation is stateless — it re-derives the whole grid from
+// scratch on every call and always evicts the oldest rows — so a
+// multi-step drag and one big jump covering the same range must now
+// produce identical shrinkOverflow contents, which is what this checks.
 //
 // Uses the REAL vt.Emulator (only newPty is faked) for both the
 // multi-step and single-jump sides of the comparison — the fake's Write
@@ -960,15 +978,15 @@ func TestShrinkOverflowRendersBetweenRealScrollbackAndLiveNotBeforeScrollback(t 
 	m, _ = m.Start()
 	e.written = []byte("mid0\nmid1\nmid2\nmid3\nmid4")
 
-	m = m.SetSize(20, 2) // captures mid2, mid3, mid4 into shrinkOverflow
+	m = m.SetSize(20, 2) // evicts mid0, mid1, mid2 (oldest) into shrinkOverflow; mid3, mid4 (newest) stay live
 
 	// Scrolling up by 1 from the live view (2 visible rows) should reach
-	// straight into shrinkOverflow's newest entry (mid4) — NOT into the
+	// straight into shrinkOverflow's newest entry (mid2) — NOT into the
 	// real scrollback's "old*" entries, which are older and must require
 	// scrolling further to reach.
 	nearby := m.ScrollLines(-1)
-	if view := nearby.View(); !strings.Contains(view, "mid4") {
-		t.Fatalf("got View()=%q after scrolling up 1 line, want it to contain mid4 (shrinkOverflow's newest entry, immediately behind the live view — not buried behind the real scrollback)", view)
+	if view := nearby.View(); !strings.Contains(view, "mid2") {
+		t.Fatalf("got View()=%q after scrolling up 1 line, want it to contain mid2 (shrinkOverflow's newest entry, immediately behind the live view — not buried behind the real scrollback)", view)
 	}
 	if view := nearby.View(); strings.Contains(view, "old2") {
 		t.Fatalf("got View()=%q after scrolling up only 1 line, want it to NOT yet reach old2 (the real scrollback's newest entry, which is older than anything shrinkOverflow holds and should require scrolling further)", view)
@@ -979,98 +997,6 @@ func TestShrinkOverflowRendersBetweenRealScrollbackAndLiveNotBeforeScrollback(t 
 	allTheWayUp := m.ScrollLines(-100)
 	if view := allTheWayUp.View(); !strings.Contains(view, "old0") {
 		t.Fatalf("got View()=%q after scrolling all the way up, want it to contain old0 (the real scrollback's oldest entry, still reachable)", view)
-	}
-}
-
-// TestShrinkContinuingResetsAfterOutputSoALaterShrinkAppends verifies the
-// other half of shrinkContinuing's contract: once real output arrives
-// after a shrink, a LATER shrink is a genuinely newer batch and must be
-// appended to shrinkOverflow's end, not prepended as if it were still
-// part of the same resize gesture.
-func TestShrinkContinuingResetsAfterOutputSoALaterShrinkAppends(t *testing.T) {
-	p := &fakePty{}
-	e := &fakeEmulator{}
-	withFakes(t, p, e)
-
-	m := New(1).SetSize(20, 5)
-	m, _ = m.Start()
-	e.written = []byte("a0\na1\na2\na3\na4")
-	m = m.SetSize(20, 4) // captures "a4"
-
-	// New output arrives — breaks the "same gesture" chain.
-	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("more")})
-	m = updated
-
-	e.written = []byte("b0\nb1\nb2\nb3")
-	m = m.SetSize(20, 3) // captures "b3" — must append, not prepend
-
-	want := []string{"a4", "b3"}
-	if len(m.shrinkOverflow) != len(want) {
-		t.Fatalf("got shrinkOverflow=%q, want %q (a4 from the first shrink, then b3 appended after output broke the gesture chain)", m.shrinkOverflow, want)
-	}
-	for i, w := range want {
-		if m.shrinkOverflow[i] != w {
-			t.Fatalf("got shrinkOverflow[%d]=%q, want %q — a shrink after new output must append, not prepend", i, m.shrinkOverflow[i], w)
-		}
-	}
-}
-
-// TestShrinkContinuingResetsOnGrowSoABounceDoesNotMisorderShrinkOverflow
-// covers a gap in the fix above, caught by an independent review: growing
-// the height back also breaks the "same shrink gesture" chain, same as
-// real output does, so a later shrink's capture is no longer part of the
-// same snapshot the earlier captures were. Without resetting
-// shrinkContinuing on growth too, a realistic "shrink, overshoot-correct
-// with a grow, shrink again" bounce within one resize-drag (real
-// OS-driven drags aren't always perfectly monotonic) would PREPEND that
-// later capture — placing it as if it were OLDER than genuinely older
-// content already captured, corrupting the order.
-//
-// Uses the fake emulator rather than the real vt.Emulator: with the real
-// library, growth only ever pads with blank rows, which the trailing-
-// blank trim in SetSize (see
-// TestSetSizeTrimsTrailingBlankPaddingFromShrinkCapture) discards before
-// this ordering question can even arise — so a real-emulator version of
-// this scenario can no longer distinguish a fixed SetSize from a broken
-// one, since either way the post-grow capture ends up empty and there is
-// nothing left to misorder. This test instead drives SetSize's
-// shrinkContinuing/prepend-vs-append machinery directly, standing in a
-// deliberately non-blank line for whatever content a later shrink
-// captures after a grow, so the ordering logic itself stays covered.
-func TestShrinkContinuingResetsOnGrowSoABounceDoesNotMisorderShrinkOverflow(t *testing.T) {
-	p := &fakePty{}
-	e := &fakeEmulator{}
-	withFakes(t, p, e)
-
-	m := New(1).SetSize(20, 5)
-	m, _ = m.Start()
-
-	e.written = []byte("a\nb\nc\nd\ne")
-	m = m.SetSize(20, 4) // captures e
-
-	e.written = []byte("a\nb\nc\nd")
-	m = m.SetSize(20, 3) // captures d, prepends (still continuing) -> [d, e]
-	if got := m.shrinkOverflow; len(got) != 2 || got[0] != "d" || got[1] != "e" {
-		t.Fatalf("test setup: got shrinkOverflow=%q, want [d e]", got)
-	}
-
-	m = m.SetSize(20, 5) // grow back, no output — must reset shrinkContinuing
-
-	// Z stands in for whatever real content a subsequent shrink captures
-	// after the grow — the fake doesn't reproduce the real library's own
-	// blank padding, so this can be non-blank and exercise the ordering
-	// logic directly regardless of the trim fix.
-	e.written = []byte("a\nb\nc\nd\nZ")
-	m = m.SetSize(20, 4) // captures Z — must APPEND, not prepend
-
-	want := []string{"d", "e", "Z"}
-	if len(m.shrinkOverflow) != len(want) {
-		t.Fatalf("got %d entries after the grow-then-shrink bounce, want %d: %q", len(m.shrinkOverflow), len(want), m.shrinkOverflow)
-	}
-	for i, w := range want {
-		if m.shrinkOverflow[i] != w {
-			t.Fatalf("got shrinkOverflow=%q, want %q — the post-grow capture must not have been prepended ahead of d and e", m.shrinkOverflow, want)
-		}
 	}
 }
 
@@ -1415,32 +1341,6 @@ func TestSetSizeReflowOverflowPinsAPausedViewport(t *testing.T) {
 	if want := pausedOffset + overflowAdded; m.scrollOffset != want {
 		t.Fatalf("got scrollOffset=%d after reflow overflow while paused, want %d (paused offset %d + %d newly-overflowed rows) — otherwise the paused viewport drifts toward the live tail", m.scrollOffset, want, pausedOffset, overflowAdded)
 	}
-}
-
-// TestSetSizeSkipsReflowOnSimultaneousWidthAndHeightChange covers the
-// design spec's B2 decision: reflow is skipped entirely when width and
-// height change together in one SetSize call — that step falls back to
-// today's existing (pre-reflow) width-truncation behavior instead. This
-// deliberately does NOT test that no content is lost on this step —
-// only that reflow's own machinery didn't run and nothing panics.
-func TestSetSizeSkipsReflowOnSimultaneousWidthAndHeightChange(t *testing.T) {
-	p := &fakePty{}
-	origPty := newPty
-	newPty = func(width, height int) (Pty, error) { return p, nil }
-	t.Cleanup(func() { newPty = origPty })
-
-	m := New(1).SetSize(40, 10)
-	m, _ = m.Start()
-	t.Cleanup(func() { _ = m.Close() })
-
-	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte("some content")})
-	m = updated
-
-	// Should not panic, and shrinkOverflow's existing height-shrink
-	// capture (untouched by this plan) still runs for the height
-	// component of this simultaneous change.
-	m = m.SetSize(10, 5)
-	_ = m.View()
 }
 
 // TestSetSizeReflowSkippedDuringAltScreen mirrors the existing
