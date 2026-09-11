@@ -1362,3 +1362,81 @@ func TestSetSizeReflowSkippedDuringAltScreen(t *testing.T) {
 		t.Fatalf("got e.written changed during an alt-screen resize, want reflow's write-back to have been skipped entirely")
 	}
 }
+
+// TestSetSizeReflowsWidthOnASimultaneousWidthAndHeightChange is the
+// actual bug this plan exists to fix: a real corner-drag changes width
+// and height together on every intermediate step, and a prior version
+// of this feature skipped reflow entirely whenever that happened,
+// leaving the width dimension completely unprotected — reproduced by
+// simulating exactly this shape of resize against the real vt.Emulator
+// and confirming no truncation.
+func TestSetSizeReflowsWidthOnASimultaneousWidthAndHeightChange(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(40, 10)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	const line = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123" // 31 chars, fits at width 40 with no wrap
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte(line)})
+	m = updated
+
+	m = m.SetSize(10, 5) // BOTH width and height shrink in the same call
+
+	view := m.View()
+	for _, want := range []string{"ABCDEFGHIJ", "KLMNOPQRST", "UVWXYZ0123"} {
+		if !strings.Contains(view, want) {
+			// May need to scroll up to reach some of the reflowed rows,
+			// since height also shrank to 5 — check the fully scrolled
+			// view too before failing.
+			allUp := m.ScrollLines(-10)
+			if !strings.Contains(allUp.View(), want) {
+				t.Fatalf("got View()=%q (live) and %q (scrolled up), want %q reachable somewhere — reflowed, not truncated, even though height changed in the same call", view, allUp.View(), want)
+			}
+		}
+	}
+}
+
+// TestSetSizeSimulatedCornerDragPreservesContentBothWays is the closest
+// unit-level approximation of the real corner-drag tmux reproduction:
+// several sequential SetSize calls each changing BOTH dimensions,
+// shrinking then growing back, mirroring how a real window corner-drag
+// delivers many small simultaneous-dimension steps rather than one
+// jump.
+func TestSetSizeSimulatedCornerDragPreservesContentBothWays(t *testing.T) {
+	p := &fakePty{}
+	origPty := newPty
+	newPty = func(width, height int) (Pty, error) { return p, nil }
+	t.Cleanup(func() { newPty = origPty })
+
+	m := New(1).SetSize(150, 45)
+	m, _ = m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	const line = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz"
+	updated, _ := m.Update(OutputMsg{id: 1, generation: m.generation, data: []byte(line)})
+	m = updated
+
+	// Shrink corner-drag: both dimensions shrink together, several steps.
+	for _, sz := range [][2]int{{130, 40}, {110, 36}, {90, 32}, {70, 28}, {60, 25}} {
+		m = m.SetSize(sz[0], sz[1])
+	}
+	// Grow corner-drag: both dimensions grow back together, several steps.
+	for _, sz := range [][2]int{{70, 28}, {90, 32}, {110, 36}, {130, 40}, {150, 45}} {
+		m = m.SetSize(sz[0], sz[1])
+	}
+
+	// The full original line must be reachable somewhere — live or
+	// scrolled — not truncated mid-word at any point in the round trip.
+	found := strings.Contains(m.View(), line)
+	if !found {
+		allUp := m.ScrollLines(-50)
+		found = strings.Contains(allUp.View(), line)
+	}
+	if !found {
+		t.Fatalf("got line not found intact anywhere after a simulated corner-drag round trip (live view=%q), want it reachable and un-truncated", m.View())
+	}
+}
