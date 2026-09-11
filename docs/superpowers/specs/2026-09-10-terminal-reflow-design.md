@@ -35,12 +35,23 @@ width. There is no stale state to invalidate — each resize event
 recomputes fresh from the grid as it exists at that moment, which is the
 property that makes this robust against the exact failure modes above.
 
+**Addendum (2026-09-11):** the first version of this spec deliberately
+skipped reflow entirely whenever width and height changed in the same
+`SetSize` call, falling back to the pre-existing (still destructive,
+width-truncating) behavior for that step. Real-world testing simulating
+a corner-drag (both dimensions changing on every intermediate step, the
+way dragging a window corner actually works) reproduced the original
+truncation bug through that gap — confirmed content cut off mid-word.
+§5 below now describes the corrected, unified approach: reflow always
+protects the width dimension on any width change, regardless of whether
+height also changed in the same call, and the old height-shrink-capture
+path (`shrinkContinuing`, and the direction it used) is retired in
+favor of one unified computation.
+
 **Out of scope for this spec** (see §8 for the full list): reflowing
 real scrollback history, pulling `shrinkOverflow` content back into view
-when a grow frees up space, perfect column-accounting for every
-mixed-width edge case, and unifying this with the existing
-height-shrink capture path (`shrinkOverflow`/`shrinkContinuing`) beyond
-the one interaction point this spec defines.
+when a grow frees up space, and perfect column-accounting for every
+mixed-width edge case.
 
 ## 2. Constraints
 
@@ -65,12 +76,12 @@ Global Constraints (apply to every task below):
 - `gofmt`-clean; `go vet ./...` and the full `go test ./...` suite green
   before every commit.
 - Skipped entirely while `IsAltScreen()` is true, matching every other
-  resize-time capture in this package (`shrinkOverflow`'s capture,
-  `restoreWidthShrink`) — a full-screen app manages its own redraw on
-  resize, and reflowing over it would corrupt whatever it's drawing.
-- Skipped entirely when height changes in the same `SetSize` call as
-  width (see §5) — falls back to today's existing behavior for that
-  step; a later width-only step still reflows normally.
+  resize-time capture in this package — a full-screen app manages its
+  own redraw on resize, and reflowing over it would corrupt whatever
+  it's drawing.
+- Runs on **any** resize that changes width, height, or both (see §5)
+  — there is no longer a case where a width change goes unprotected
+  because height also changed in the same call.
 
 ## 3. Wrap Detection & Rewrap Algorithm
 
@@ -158,50 +169,91 @@ combined with a small height), clamp `y` to the last visible row
 defensively; this is an edge case, not a targeted scenario, so
 "visually reasonable" is the bar, not "exactly correct."
 
-## 5. Height Interaction
+## 5. Height Interaction (unified — supersedes the original scope decision)
 
-Rewrapping at a new width can require more physical rows (narrower) or
-fewer (wider) than the current height. Two cases:
+The original version of this spec skipped reflow entirely whenever
+width and height changed in the same `SetSize` call, deferring to a
+separate, older height-shrink-capture mechanism (`shrinkOverflow` plus
+a `shrinkContinuing` gesture-tracking flag, from the PR that first
+addressed height-shrink data loss). Real-world testing simulating a
+corner-drag — both dimensions changing on every intermediate step,
+which is how dragging a window corner actually behaves, not a rare
+edge case — reproduced the original width-truncation bug through
+exactly that gap: the old height-shrink path protected rows from
+height loss but then still let the library's own resize destructively
+truncate every surviving row's width, unprotected. "Most resize drags
+move one boundary at a time" was the wrong assumption.
 
-- **Width changes, height does not** (the common case — most resize
-  drags move one boundary at a time): this is the case this spec
-  handles. If the rewrapped content needs more rows than fit in the
-  unchanged height, the excess from the **top** (oldest) is appended
-  into the existing `m.shrinkOverflow` field — reusing the render tier
-  PR #8 already built for the height-shrink bug, rather than adding a
-  second parallel mechanism. This is always an append (never a
-  prepend): reflow has no "continuing the same gesture" concept (§3.4),
-  so every call's overflow is, by construction, a fresh, freshly-newer
-  batch relative to whatever `shrinkOverflow` already holds — the same
-  semantics `SetSize`'s own height-shrink capture already uses for its
-  non-continuing case. If the rewrapped content needs *fewer* rows
-  (widening), the freed rows at the top of the grid are simply left
-  blank — no attempt is made to pull rows back out of `shrinkOverflow`
-  to fill them (see §8, out of scope for this pass).
-- **Width and height change in the same `SetSize` call**: reflow is
-  skipped entirely for that call. `SetSize` falls back to its existing
-  behavior for that step (today's width-truncation for the width
-  component, and the existing `shrinkOverflow`/`shrinkContinuing`
-  machinery for the height component, both untouched by this spec). A
-  real drag that moves both boundaries together will still fail to
-  reflow on those specific steps; a later width-only step (or the drag
-  settling on a final width-only adjustment) reflows normally. This
-  keeps this spec from having to touch or re-verify PR #8's
-  already-shipped, already-hard-won height-shrink logic — a deliberate
-  scope boundary, not an oversight (see the design discussion's
-  approach B2).
+### 5.1 One computation for every resize shape
 
-`shrinkContinuing` itself is untouched by this spec: reflow's own
-overflow writes never read or set it, and the existing height-shrink
-path's own reads/writes of it are unaffected, since reflow never runs
-in the same call as a height change (this case is explicitly skipped,
-above).
+`SetSize` now runs a single computation whenever width, height, or
+both change (skipped only for `IsAltScreen()`, as before):
 
-`shrinkOverflow`'s own doc comment (`Model` struct, `model.go`)
-currently describes it as holding rows "a height-shrinking SetSize
-captured" — broadened by this spec to also hold width-reflow overflow,
-so that comment needs a one-line update alongside the implementation to
-stay accurate, not just the code.
+1. Capture the old grid's rows via `Render()` and cursor via
+   `CursorPosition()`, trimmed of trailing blank padding exactly as
+   before (§4's cursor-mapping paragraph, unchanged).
+2. If width changed, reflow those rows at the new width via
+   `reflowRows` (§3-§4) — this is unconditional on whether height also
+   changed. If width did *not* change, the rows and cursor position
+   pass through unchanged (nothing to rewrap).
+3. Compare the resulting row count against the **new** height. If it's
+   larger, the excess is overflow (§5.2). This subsumes what used to
+   be a separate, height-only code path: a pure height shrink with no
+   width change is just this same computation with step 2 a no-op.
+4. Call the library's own `emu.Resize(newWidth, newHeight)` — still
+   needed to actually resize the grid; its own content-handling no
+   longer matters, since step 5 unconditionally overwrites it.
+5. Write the surviving rows back and reposition the cursor (§6,
+   unchanged) — this already erases every row it touches, so whatever
+   the library's own resize did to cell content is fully overwritten
+   regardless of the resize's shape.
+
+### 5.2 Overflow direction — unified, and corrected
+
+The pre-existing height-shrink capture and this spec's own width-reflow
+overflow disagreed with each other on which end of the grid survives:
+the height-shrink path (constrained by the library's own resize, which
+always keeps the *top* rows) evicted the *bottom* — the newest,
+cursor-adjacent rows — into `shrinkOverflow`, while width-reflow
+overflow evicted the *top* (oldest) and kept the bottom (newest) live.
+
+Unifying these into one computation means picking one direction, and
+the constraint that forced the height-shrink path's direction no
+longer applies (step 4 above no longer relies on the library's resize
+to select *which* content survives — step 5 overwrites it entirely
+regardless). The corrected, adopted direction: **the newest rows
+(including whichever one holds the cursor) always stay live; the
+oldest excess is evicted to `shrinkOverflow`** — matching how a real
+terminal behaves (old content scrolls into history, the current prompt
+stays visible) and matching this spec's own width-reflow overflow as
+already shipped. This also fixes a latent oddity in the original
+height-shrink behavior: previously, shrinking height could make the
+cursor/prompt appear to "vanish into history" while stale,
+already-read content stayed visible as "live" — a direct consequence
+of the old, library-constrained direction, not a deliberate design
+choice.
+
+This is always an append to `shrinkOverflow`, never a prepend:
+reflow's per-call statelessness (§3.4) extends to this unified
+computation too — every call re-derives the correct oldest-first order
+directly from the CURRENT grid, with no need to track "is this
+still the same resize gesture" the way `shrinkContinuing` did. A
+sequence of small steps (a real multi-step drag) and one big jump
+covering the same total resize now naturally produce the same result,
+without any prepend/continuation bookkeeping — `shrinkContinuing` is
+therefore removed entirely, along with both of its own reset
+triggers (on output, on height growth) and the prepend branch in the
+old capture code.
+
+If the new row count is *smaller* than the new height (widening frees
+up rows), the freed rows at the top are simply left blank — no attempt
+is made to pull rows back out of `shrinkOverflow` to fill them (§8,
+still out of scope).
+
+`shrinkOverflow`'s own doc comment (`Model` struct, `model.go`) needs
+updating to describe the unified source (any resize whose new
+computed row count exceeds the new height) rather than referencing
+`shrinkContinuing` or a height-only origin.
 
 ## 6. Write-Back
 
@@ -251,17 +303,22 @@ rather than raw cells (the same tradeoff `shrinkOverflow` already makes).
 - **Cursor-correctness tests**: a distinctive marker character at the
   cursor's position before a shrink/grow round trip must be at the
   semantically equivalent position after.
-- **Height-interaction tests**: confirm a simultaneous width+height
-  `SetSize` call correctly skips reflow (§5) without regressing any
-  existing `TestSetSize*` height-shrink test; confirm width-only
-  overflow correctly appends (never prepends) into `shrinkOverflow`.
+- **Simultaneous width+height resize tests**: a single `SetSize` call
+  that changes both dimensions must reflow the width component exactly
+  as a width-only call would — this is the actual bug a real corner-drag
+  exposed, and it is a first-class required test, not an afterthought.
+  Confirm overflow correctly appends (never prepends) into
+  `shrinkOverflow` for every resize shape (width-only, height-only, and
+  both together), and confirm the corrected "newest stays live, oldest
+  evicted" direction (§5.2) holds uniformly across all three.
 - **Alt-screen skip test**: reflow does not run while `IsAltScreen()` is
   true.
 - **Real end-to-end tmux verification against an interactive zsh
-  session** — the exact reproduction (`cat README.md`, shrink the real
-  Ghostty window, grow it back) that defeated both snapshot-based
-  attempts. This is the actual bar this feature has to clear before
-  being considered done, not just its unit tests passing.
+  session, including a simulated corner-drag** (both dimensions
+  changing on every intermediate step, not just a single-edge
+  width-only drag) — this exact scenario is what exposed the gap in
+  the original version of this spec, so it is the bar this feature has
+  to clear, not just the single-edge case.
 - **Independent code review** before push, given this is the most
   complex algorithm in the package.
 
@@ -336,14 +393,6 @@ gaps discovered later:
   is guaranteed and tested; beyond that, "matches `lipgloss.Width`'s own
   measurement" is the bar, not a from-scratch Unicode-width
   implementation.
-- **Unifying this with `shrinkContinuing`/height-shrink capture beyond
-  the one interaction point in §5.** A follow-up could delete
-  `shrinkContinuing`'s prepend/append machinery entirely by unifying
-  height and width handling into one stateless recompute (since reflow
-  proves that pattern works) — deliberately not attempted here, to keep
-  this spec from re-touching and re-verifying already-shipped PR #8
-  logic (approach B2 from the design discussion; B1 remains available
-  as future work).
 - **Filing the upstream fix** (a real per-row wrap flag in
   `ultraviolet`/`x/vt` itself, the architecturally "correct" location
   for this). Worth doing separately; not blocking this spec, and not
